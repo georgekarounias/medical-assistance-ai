@@ -16,7 +16,7 @@ A .NET 10 web service that ingests clinical Documents into Postgres + pgvector s
 
 | Type | Arrives as | Identity | Strategy shape |
 | --- | --- | --- | --- |
-| SessionTranscript | Inline JSON speaker turns | (`sessionId`, `sequenceNumber`) | LLM semantic chunking (boundaries-only) + blurbs + summary → embed → store |
+| SessionTranscript | Inline free-text transcript | (`sessionId`, `sequenceNumber`) | LLM semantic chunking (boundaries-only, line-based) + blurbs + summary → embed → store |
 | DoctorNote | Inline text, optional `sessionId` link | `noteId` (backend-assigned; edit = Correction) | Same prose pipeline as transcripts (monologue mode) |
 | LabReport | Digitally generated PDF (base64, size-capped), many lab layouts | Backend-assigned document id + content-hash dedup | Document Intelligence → Renditions (Tier 1) + Analyte Results (Tier 2) |
 | ImagingReport | PDF of radiologist's findings + link to image | Backend-assigned document id + content-hash dedup | Document Intelligence text → prose pipeline; image link rides as chunk metadata. Pixels never ingested (ADR-0005) |
@@ -33,7 +33,7 @@ Scanned/handwritten documents (no text layer) are **out of scope** — no OCR pa
   "doctorId": "…", "patientId": "…",
   "sessionId": "…", "sequenceNumber": 1,
   "sessionDate": "2026-07-10T14:30:00Z", "language": "el",
-  "turns": [ { "speaker": "Doctor", "text": "…", "startTime": "00:00:04" } ]
+  "transcript": "Doctor: Good morning…\nPatient: I keep waking up with headaches…"
 }
 ```
 
@@ -61,13 +61,14 @@ Full surface:
 - Startup recovery re-enqueues non-terminal ingestions; attempt counter (max 3) prevents poison loops.
 - No cross-document ordering; only same-identity concurrency is blocked (the 409).
 - The **Orchestrator** is a deterministic registry lookup `documentType → IngestionStrategy` (ADR-0004). Strategies are plain sequential C# stages; AI lives inside stages as MAF `ChatClientAgent`s behind `IChatClient`/`IEmbeddingGenerator` (day one: Azure OpenAI EU, `gpt-4.1-mini` + `text-embedding-3-large`; provider is config, not architecture).
+- **Agent instructions come from the database** (ADR-0008): an `agent_instructions` table (name → instructions → **version**) seeded from code defaults, loaded once at application start into a singleton provider that strategies use to build their agents. Prompt changes apply on restart, no redeploy. Every ingestion records the instruction version and chat model that processed it, so quality regressions are traceable to the prompt that caused them and selectively re-ingestable. Safety is unaffected — the code-side guardrails (boundary validation, verbatim verification) enforce the output contract regardless of prompt wording.
 - Every ingestion is **atomic** (ADR-0003): nothing visible until the final single Postgres transaction (delete superseded chunks/rows + insert + `Completed`); crash/retry = rerun from scratch.
 
 ## Strategies
 
-**SessionTranscript** — validate/persist → chunk+enrich (one structured-output agent call: turn-boundary ranges + Context Blurb per chunk + Transcript Summary; code assembles verbatim text, validates boundaries, enforces ~200–600-token targets / 800 hard max; one corrective retry then `Failed` — no degraded fallback, ADR-0002) → batched embed (blurb + verbatim text) → atomic store (summary embedded as its own chunk).
+**SessionTranscript** — validate/persist → chunk+enrich (one structured-output agent call: line-index ranges over the numbered transcript Lines + Context Blurb per chunk + Transcript Summary; code assembles verbatim text from the pointed-at Lines, validates boundaries, enforces ~200–600-token targets / 800 hard max; one corrective retry then `Failed` — no degraded fallback, ADR-0002) → batched embed (blurb + verbatim text) → atomic store (summary embedded as its own chunk).
 
-**DoctorNote** — same prose pipeline; input is monologue text instead of turns; chunk boundaries are paragraph/topic ranges; supersede on `noteId` re-POST.
+**DoctorNote** — same prose pipeline; input is monologue text instead of dialog; supersede on `noteId` re-POST.
 
 **LabReport** — validate/persist → Document Intelligence layout extraction (text + table cell grids) → **Tier 1:** deterministic Rendition per Panel (code renders "Hemoglobin: 13.2 g/dL (ref 13.5–17.5, LOW)…" — one chunk per Panel, never per analyte) → **Tier 2:** analyte mapping (LLM classifies columns + canonical names; code copies values from the cells the LLM pointed at; verbatim verification per row — ADR-0006) → embed Renditions → atomic store of chunks + analyte rows.
 Failure policy ("tiered honesty"): Tier 1 must succeed or the ingestion is `Failed`; Tier 2 rows are all-or-nothing — any unverifiable row stores zero rows and sets `analytesExtracted: false` (queryable, re-processable). Trend queries never see a partial Panel.
@@ -88,8 +89,9 @@ The common core every chunk carries, designed once because reshaping a populated
 | `documentDate` | Clinical date (session/collection date), not upload time — powers "last X-ray" |
 | `language` | `el`/`en` |
 | `chunkKind` | `dialog` / `summary` / `note` / `labPanel` / `imagingReport` |
-| `sourceRef` (nullable) | Turn range / PDF page / image link |
+| `sourceRef` (nullable) | Line range / PDF page / image link |
 | `sessionId` (nullable) | Transcripts and session-linked notes only |
+| `embeddingModel` | Which model produced the vector — the write/read contract. Recording it per chunk makes an embedding-model change a managed re-embedding migration instead of silent search corruption; startup guards dimensions against config |
 
 **Analyte Result rows** (relational, beside the vector table): `canonicalName`, `verbatimName`, value, unit, reference range, flag, collection date, `documentId`, provenance (page/table/row). Exist for trend queries vector search cannot answer.
 
@@ -102,6 +104,7 @@ Persisted: `Queued → Processing → Completed | Failed | Deleted` (tombstone).
 | Deferred | Re-entry point |
 | --- | --- |
 | Structured clinical-fact extraction from dialog (medications, conditions, symptoms, follow-ups) | New stage + agent in the transcript strategy; schema + mandatory provenance sketched in interview Q7. Unlike lab analytes, this is generative extraction — the full guardrail debate applies |
+| Windowing for oversized documents (transcript too big for one chunking call) | Two-level pattern: deterministically pre-split into bounded windows with stable line offsets, then semantic chunking within/between windows. Never let the LLM see unbounded input; never invent this ad hoc under pressure |
 | OCR for scanned/handwritten documents | Document Intelligence supports it; re-validate quality per ADR-0005 before opening scope |
 | LOINC (or similar) coding of analytes | Additive on `canonicalName` (ADR-0006) |
 | Session-level artifacts (rolling session summary) | Would force per-session ordering — rejected; revisit only with the feature |

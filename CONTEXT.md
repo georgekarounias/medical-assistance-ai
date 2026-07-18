@@ -46,15 +46,15 @@ A single real-world encounter between one doctor and one patient. Identified by 
 _Avoid_: Visit, appointment, recording
 
 **Transcript**:
-One transcription artifact belonging to a Session, composed of Turns. Identified by (`sessionId`, `sequenceNumber`). A Session may have several Transcripts.
-_Avoid_: Recording, document, text
+One transcription artifact belonging to a Session, carrying the dialog as free text. Identified by (`sessionId`, `sequenceNumber`). A Session may have several Transcripts.
+_Avoid_: Recording, document
 
 **Sequence Number**:
 The ordinal of a Transcript within its Session. A POST with a new sequence number is a Continuation; a POST reusing an existing one is a Correction.
 
-**Turn**:
-One speaker-attributed utterance in a Transcript (speaker + text, optionally start time). Speakers are Doctor or Patient.
-_Avoid_: Line, message, utterance
+**Line**:
+One non-empty line of a Transcript's text; the atom that chunk boundaries snap to. The service never parses lines into structured speaker turns.
+_Avoid_: Turn, message, utterance
 
 **Continuation**:
 A new Transcript (unseen sequence number) for an existing Session — a sibling that adds content. Its chunks coexist with those of earlier Transcripts.
