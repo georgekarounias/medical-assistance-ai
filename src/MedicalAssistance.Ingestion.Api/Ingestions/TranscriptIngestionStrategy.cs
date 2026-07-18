@@ -21,12 +21,14 @@ public sealed class TranscriptIngestionStrategy
     private readonly string _chatModel;
     private readonly IEmbeddingGenerator<string, Embedding<float>> _embeddingGenerator;
     private readonly IngestionStore _store;
+    private readonly ChunkSizeGuardrails _sizeGuardrails;
 
     public TranscriptIngestionStrategy(
         IChatClient chatClient,
         IEmbeddingGenerator<string, Embedding<float>> embeddingGenerator,
         IngestionStore store,
-        AgentInstructionProvider instructionProvider)
+        AgentInstructionProvider instructionProvider,
+        IConfiguration configuration)
     {
         // A Microsoft Agent Framework agent wrapping whatever IChatClient is
         // configured — Azure OpenAI in production, a scripted fake in tests.
@@ -38,6 +40,12 @@ public sealed class TranscriptIngestionStrategy
         _chatModel = (chatClient.GetService(typeof(ChatClientMetadata)) as ChatClientMetadata)?.DefaultModelId ?? "unknown";
         _embeddingGenerator = embeddingGenerator;
         _store = store;
+
+        // Size limits are operational tuning, not clinical policy — the
+        // defaults are the band where embedding quality holds up.
+        _sizeGuardrails = new ChunkSizeGuardrails(
+            configuration.GetValue("Chunking:MinTokens", 50),
+            configuration.GetValue("Chunking:MaxTokens", 800));
     }
 
     /// <summary>Runs the full strategy for one Transcript: chunk (boundaries-only) → enrich → embed (batched) → atomic store.</summary>
@@ -45,7 +53,8 @@ public sealed class TranscriptIngestionStrategy
     {
         var lines = SplitIntoLines(request.Transcript);
         var plan = await RequestChunkPlanAsync(lines, ct);
-        var chunks = AssembleChunks(lines, plan);
+        var sizedChunks = _sizeGuardrails.Apply(lines, plan.Chunks);
+        var chunks = AssembleChunks(lines, sizedChunks, plan.Summary);
 
         var embeddings = await _embeddingGenerator.GenerateAsync(chunks.Select(c => c.EmbeddingInput).ToList(), cancellationToken: ct);
         var records = chunks
@@ -137,10 +146,11 @@ public sealed class TranscriptIngestionStrategy
         return prompt.ToString();
     }
 
-    private static List<AssembledChunk> AssembleChunks(IReadOnlyList<string> lines, ChunkPlan plan)
+    private static List<AssembledChunk> AssembleChunks(
+        IReadOnlyList<string> lines, IReadOnlyList<PlannedChunk> plannedChunks, string summary)
     {
         var chunks = new List<AssembledChunk>();
-        foreach (var planned in plan.Chunks)
+        foreach (var planned in plannedChunks)
         {
             var verbatim = string.Join("\n", lines
                 .Skip(planned.StartLine)
@@ -153,12 +163,14 @@ public sealed class TranscriptIngestionStrategy
                 EmbeddingInput: $"{planned.ContextBlurb}\n\n{verbatim}"));
         }
 
+        // The summary is a single generated paragraph, not source text — the
+        // size guardrails deliberately never touch it.
         chunks.Add(new AssembledChunk(
             Kind: "summary",
-            VerbatimText: plan.Summary,
+            VerbatimText: summary,
             ContextBlurb: null,
             SourceRefJson: null,
-            EmbeddingInput: plan.Summary));
+            EmbeddingInput: summary));
         return chunks;
     }
 
@@ -173,8 +185,6 @@ public sealed class TranscriptIngestionStrategy
     }
 
     private sealed record ChunkPlan(List<PlannedChunk> Chunks, string Summary);
-
-    private sealed record PlannedChunk(int StartLine, int EndLine, string ContextBlurb);
 
     private sealed record AssembledChunk(
         string Kind, string VerbatimText, string? ContextBlurb, string? SourceRefJson, string EmbeddingInput);

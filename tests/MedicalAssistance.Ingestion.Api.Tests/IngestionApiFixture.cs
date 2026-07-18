@@ -14,6 +14,17 @@ public sealed class IngestionApiFixture : IAsyncLifetime
 {
     public const int EmbeddingDimensions = 8;
 
+    /// <summary>
+    /// Chunk-size guardrail thresholds for tests — deliberately small so a
+    /// handful of transcript lines can exercise merging and splitting, while
+    /// the transcripts used by the other tests stay inside the band and keep
+    /// asserting what they were written to assert.
+    /// </summary>
+    public const int MinChunkTokens = 12;
+
+    /// <inheritdoc cref="MinChunkTokens" />
+    public const int MaxChunkTokens = 40;
+
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("pgvector/pgvector:pg17").Build();
 
     public ScriptedChatClient ChatClient { get; } = new();
@@ -38,6 +49,8 @@ public sealed class IngestionApiFixture : IAsyncLifetime
         {
             builder.UseSetting("ConnectionStrings:Postgres", ConnectionString);
             builder.UseSetting("Embeddings:Dimensions", EmbeddingDimensions.ToString());
+            builder.UseSetting("Chunking:MinTokens", MinChunkTokens.ToString());
+            builder.UseSetting("Chunking:MaxTokens", MaxChunkTokens.ToString());
             builder.ConfigureServices(services =>
             {
                 services.AddSingleton<IChatClient>(chatClient);
