@@ -45,9 +45,15 @@ public sealed class IngestionsController(IngestionStore store, Channel<Guid> que
     /// problem document whose <c>errors</c> map names every offending field at
     /// once; no ingestion is created, so there is nothing to retry or clean up.
     /// </response>
+    /// <response code="409">
+    /// An ingestion for this document is still Queued or Processing. The problem
+    /// document carries its <c>ingestionId</c>: poll that one rather than
+    /// resubmitting, and submit again only if it ends as Failed.
+    /// </response>
     [HttpPost]
     [ProducesResponseType<IngestionAccepted>(StatusCodes.Status202Accepted)]
     [ProducesResponseType<ValidationProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> Submit([FromBody] IngestionRequest request, CancellationToken ct)
     {
         // Validate before anything durable happens: an invalid submission must
@@ -55,6 +61,12 @@ public sealed class IngestionsController(IngestionStore store, Channel<Guid> que
         var errors = IngestionRequestValidation.Validate(request);
         if (errors.Count > 0)
             return ValidationProblem(new ValidationProblemDetails(errors));
+
+        // Nothing can be decided about a document that has not landed yet, and
+        // two workers on one document would race to write its chunk set — so a
+        // submission that is still in flight blocks its own resubmission.
+        if (await store.FindInFlightAsync(request, ct) is { } inFlightId)
+            return AlreadyInFlight(inFlightId);
 
         // Re-posting content that is already ingested is never new knowledge.
         // After success it is a no-op; after failure it is a retry of the very
@@ -106,4 +118,19 @@ public sealed class IngestionsController(IngestionStore store, Channel<Guid> que
         await store.GetStatusAsync(id, ct) is { } status ? Ok(status) : NotFound();
 
     private static string LocationOf(Guid ingestionId) => $"/ingestions/{ingestionId}";
+
+    /// <summary>
+    /// 409 carrying the id of the ingestion already in flight, so the caller can
+    /// poll the work that is running instead of being told only "no".
+    /// </summary>
+    private ObjectResult AlreadyInFlight(Guid ingestionId)
+    {
+        var conflict = Problem(
+            statusCode: StatusCodes.Status409Conflict,
+            title: "An ingestion for this document is already in progress.",
+            detail: "The document was accepted earlier and has not finished yet. " +
+                    "Poll it at GET /ingestions/{id}; submit again only if it ends as Failed.");
+        ((ProblemDetails)conflict.Value!).Extensions["ingestionId"] = ingestionId;
+        return conflict;
+    }
 }

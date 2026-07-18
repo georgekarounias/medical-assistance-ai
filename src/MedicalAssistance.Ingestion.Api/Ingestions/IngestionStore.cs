@@ -47,6 +47,36 @@ public sealed class IngestionStore(IngestionDbContext db)
     private static readonly JsonSerializerOptions PayloadJson = new(JsonSerializerDefaults.Web);
 
     /// <summary>
+    /// Finds an Ingestion that has been accepted but has not finished — Queued
+    /// or Processing — for this Document identity, or for this exact content
+    /// filed anywhere else. Returns null when nothing is in flight.
+    ///
+    /// Two workers running the same document at once would race to write its
+    /// chunk set, and neither dedup nor Correction can settle a document that
+    /// has not landed yet, so the second submission is refused until the first
+    /// reaches a terminal state.
+    ///
+    /// The patient is part of the match even though a transcript's identity is
+    /// (sessionId, sequenceNumber): if session ids are globally unique the extra
+    /// predicate costs nothing, and if they ever turn out to be per-patient it
+    /// stops one patient's upload from blocking another's.
+    /// </summary>
+    public Task<Guid?> FindInFlightAsync(IngestionRequest request, CancellationToken ct = default)
+    {
+        var (_, contentHash) = SerializeAndHash(request);
+        return db.Ingestions.AsNoTracking()
+            .Where(i => (i.Status == "Queued" || i.Status == "Processing")
+                        && ((i.DocumentType == request.DocumentType
+                             && i.PatientId == request.PatientId
+                             && i.SessionId == request.SessionId
+                             && i.SequenceNumber == request.SequenceNumber)
+                            || i.ContentHash == contentHash))
+            .OrderBy(i => i.CreatedAt)
+            .Select(i => (Guid?)i.Id)
+            .FirstOrDefaultAsync(ct);
+    }
+
+    /// <summary>
     /// Finds the most recent Ingestion for the same Document identity whose
     /// submitted content is byte-for-byte identical, or null when this content
     /// has never been submitted for this identity. Same identity with different

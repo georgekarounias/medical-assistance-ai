@@ -42,12 +42,15 @@ public sealed class IngestionApiFixture : IAsyncLifetime
 
     /// <summary>
     /// Boots an additional application instance against the same database —
-    /// used to observe startup-time behavior (seeding, singleton loading).
+    /// used to observe startup-time behavior (seeding, singleton loading), and
+    /// with <paramref name="workerCount"/> set to zero, to park submissions in
+    /// Queued for as long as a test needs them there.
     /// </summary>
-    public WebApplicationFactory<Program> CreateFactory(ScriptedChatClient chatClient) =>
+    public WebApplicationFactory<Program> CreateFactory(ScriptedChatClient chatClient, int workerCount = 4) =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseSetting("ConnectionStrings:Postgres", ConnectionString);
+            builder.UseSetting("Ingestion:WorkerCount", workerCount.ToString());
             builder.UseSetting("Embeddings:Dimensions", EmbeddingDimensions.ToString());
             builder.UseSetting("Chunking:MinTokens", MinChunkTokens.ToString());
             builder.UseSetting("Chunking:MaxTokens", MaxChunkTokens.ToString());
