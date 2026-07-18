@@ -88,6 +88,14 @@ public sealed class IngestionsController(
                 // Identical content after a failure is a retry — the same rerun
                 // the retry endpoint performs, asked for a different way.
                 var (outcome, _) = await store.TryRetryAsync(failed.Id, ct);
+
+                // Unless a correction landed while that one was broken. Sending
+                // the original again is then a deliberate return to it, not the
+                // recovery of a stale run, so it is ingested as new work below
+                // and gets its own ingestion id.
+                if (outcome == RetryOutcome.Overtaken)
+                    break;
+
                 if (outcome == RetryOutcome.Requeued)
                     await queue.Writer.WriteAsync(failed.Id, ct);
                 return Accepted(LocationOf(failed.Id), new IngestionAccepted { IngestionId = failed.Id });
@@ -169,15 +177,18 @@ public sealed class IngestionsController(
     /// attempt budget, so a document that exhausted its automatic attempts can
     /// still be recovered once the cause has been dealt with.
     ///
-    /// Only a Failed ingestion can be rerun.
+    /// Only a Failed ingestion can be rerun, and only while it is still the most
+    /// recent word on its document: once a later submission has completed, the
+    /// old failure is stale and rerunning it would revert the document.
     /// </remarks>
     /// <param name="id">The ingestion id returned by the submit call.</param>
     /// <param name="ct">Cancellation token for the request.</param>
     /// <response code="202">The rerun was queued; poll <c>GET /ingestions/{id}</c> as before.</response>
     /// <response code="404">No ingestion with this id exists.</response>
     /// <response code="409">
-    /// The ingestion did not fail, so there is nothing to rerun. The problem
-    /// document names its current state.
+    /// There is nothing to rerun: either the ingestion did not fail, or a newer
+    /// submission of the same document has completed since it did. The problem
+    /// document says which.
     /// </response>
     [HttpPost("{id:guid}/retry")]
     [ProducesResponseType<IngestionAccepted>(StatusCodes.Status202Accepted)]
@@ -196,6 +207,14 @@ public sealed class IngestionsController(
                     statusCode: StatusCodes.Status409Conflict,
                     title: "This ingestion cannot be rerun.",
                     detail: $"Only a Failed ingestion can be rerun; this one is {currentStatus}.");
+
+            case RetryOutcome.Overtaken:
+                return Problem(
+                    statusCode: StatusCodes.Status409Conflict,
+                    title: "A newer version of this document has already been ingested.",
+                    detail: "This ingestion failed, but the document was submitted again afterwards and that " +
+                            "run completed. Rerunning this one would replace the newer version with the older " +
+                            "one. Submit the content again if it is what the record should hold.");
         }
 
         await queue.Writer.WriteAsync(id, ct);

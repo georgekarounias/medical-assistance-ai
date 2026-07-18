@@ -86,6 +86,45 @@ public class DuplicateSubmissionTests(IngestionApiFixture fixture) : IClassFixtu
     }
 
     [Fact]
+    public async Task Re_posting_a_failed_document_a_correction_replaced_ingests_it_as_new_work()
+    {
+        var client = fixture.Factory.CreateClient();
+        const string patientId = "pat-failed-then-corrected";
+        var original = TranscriptPayload(patientId, sequenceNumber: 1, Transcript);
+
+        fixture.ChatClient.EnqueueResponse(InvalidPlanWithGap);
+        fixture.ChatClient.EnqueueResponse(InvalidPlanWithGap);
+        var failed = await PostAsync(client, original);
+        await WaitForStatusAsync(client, failed.Id, "Failed");
+
+        fixture.ChatClient.EnqueueResponse(ValidPlan);
+        var corrected = await PostAsync(client, TranscriptPayload(patientId, sequenceNumber: 1, """
+            Doctor: Good morning, what brings you in today?
+            Patient: I keep waking up with migraines, not headaches.
+            Doctor: How much water do you usually drink?
+            Patient: Maybe two glasses a day.
+            """));
+        await WaitForStatusAsync(client, corrected.Id, "Completed");
+
+        // Sending the original again is a doctor saying this text is what the
+        // record should hold — new work, not the revival of a run the document
+        // has moved past, so it gets its own ingestion rather than reusing the
+        // failed one and quietly reverting the correction.
+        fixture.ChatClient.EnqueueResponse(ValidPlan);
+        var reposted = await PostAsync(client, original);
+
+        Assert.NotEqual(failed.Id, reposted.Id);
+        Assert.False(reposted.Duplicate);
+        await WaitForStatusAsync(client, reposted.Id, "Completed");
+
+        var chunks = await ReadDocumentChunksAsync(patientId, sequenceNumber: 1);
+        Assert.Contains(chunks, text => text.Contains("one glass a day"));
+        Assert.DoesNotContain(chunks, text => text.Contains("migraines"));
+        Assert.Equal("Superseded", await ReadStatusAsync(client, corrected.Id));
+        Assert.Equal("Failed", await ReadStatusAsync(client, failed.Id));
+    }
+
+    [Fact]
     public async Task The_same_content_filed_under_a_new_sequence_number_is_skipped()
     {
         var client = fixture.Factory.CreateClient();
@@ -225,6 +264,27 @@ public class DuplicateSubmissionTests(IngestionApiFixture fixture) : IClassFixtu
             await Task.Delay(100);
         }
         Assert.Fail($"Ingestion {ingestionId} was {lastSeen}, expected {expected}.");
+    }
+
+    /// <summary>
+    /// The chunk texts a document currently holds. Scoped by patient as well as
+    /// document id, because the tests here deliberately share a session id.
+    /// </summary>
+    private async Task<List<string>> ReadDocumentChunksAsync(string patientId, int sequenceNumber)
+    {
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(
+            "SELECT verbatim_text FROM chunks WHERE document_id = $1 AND patient_id = $2 ORDER BY chunk_index",
+            connection);
+        command.Parameters.AddWithValue($"sess-dedup#{sequenceNumber}");
+        command.Parameters.AddWithValue(patientId);
+
+        var texts = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+            texts.Add(reader.GetString(0));
+        return texts;
     }
 
     private async Task<long> CountChunksAsync(Guid ingestionId)

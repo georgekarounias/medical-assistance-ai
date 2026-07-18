@@ -23,6 +23,13 @@ public class RetryEndpointTests(IngestionApiFixture fixture) : IClassFixture<Ing
         Patient: Maybe one glass a day.
         """;
 
+    private const string CorrectedTranscript = """
+        Doctor: Good morning, what brings you in today?
+        Patient: I keep waking up with migraines, not headaches.
+        Doctor: How much water do you usually drink?
+        Patient: Maybe two glasses a day.
+        """;
+
     private const string ValidPlan = """
         {
           "chunks": [
@@ -125,14 +132,71 @@ public class RetryEndpointTests(IngestionApiFixture fixture) : IClassFixture<Ing
         Assert.Equal(3, await CountChunksAsync(ingestionId));
     }
 
-    private static async Task<Guid> PostAsync(HttpClient client, string patientId)
+    [Fact]
+    public async Task Rerunning_a_failed_ingestion_a_correction_has_replaced_is_refused()
     {
-        var response = await client.PostAsJsonAsync("/ingestions", Payload(patientId));
+        var client = fixture.Factory.CreateClient();
+        const string patientId = "pat-overtaken";
+
+        // The first upload fails, and the doctor does not wait around: they fix
+        // the transcript and send the corrected one, which lands.
+        var failedId = await PostAsync(client, patientId);
+        await WaitForStatusAsync(client, failedId, "Failed");
+
+        fixture.ChatClient.EnqueueResponse(ValidPlan);
+        var correctedId = await PostAsync(client, patientId, CorrectedTranscript);
+        await WaitForStatusAsync(client, correctedId, "Completed");
+
+        // Rerunning the failed one now would republish the text the correction
+        // replaced — the record would silently revert to a version a doctor had
+        // already rejected. It is stale work, so it is refused.
+        var retry = await client.PostAsync($"/ingestions/{failedId}/retry", null);
+
+        Assert.Equal(HttpStatusCode.Conflict, retry.StatusCode);
+        var problem = await retry.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Contains("newer", problem.GetProperty("detail").GetString()!, StringComparison.OrdinalIgnoreCase);
+
+        await Task.Delay(300);
+        var chunks = await ReadDocumentChunksAsync(patientId);
+        Assert.Contains(chunks, text => text.Contains("migraines"));
+        Assert.DoesNotContain(chunks, text => text.Contains("one glass a day"));
+        Assert.Equal("Completed", (await ReadStatusAsync(client, correctedId)).GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task A_correction_that_failed_is_still_rerun_over_the_version_it_replaces()
+    {
+        var client = fixture.Factory.CreateClient();
+        const string patientId = "pat-late-correction";
+
+        fixture.ChatClient.EnqueueResponse(ValidPlan);
+        var originalId = await PostAsync(client, patientId);
+        await WaitForStatusAsync(client, originalId, "Completed");
+
+        // The correction is the newer intent, so its failure is exactly the kind
+        // worth recovering — the guard against stale reruns must not swallow it.
+        var correctionId = await PostAsync(client, patientId, CorrectedTranscript);
+        await WaitForStatusAsync(client, correctionId, "Failed");
+
+        fixture.ChatClient.EnqueueResponse(ValidPlan);
+        var retry = await client.PostAsync($"/ingestions/{correctionId}/retry", null);
+
+        Assert.Equal(HttpStatusCode.Accepted, retry.StatusCode);
+        await WaitForStatusAsync(client, correctionId, "Completed");
+
+        var chunks = await ReadDocumentChunksAsync(patientId);
+        Assert.Contains(chunks, text => text.Contains("migraines"));
+        Assert.Equal("Superseded", (await ReadStatusAsync(client, originalId)).GetProperty("status").GetString());
+    }
+
+    private static async Task<Guid> PostAsync(HttpClient client, string patientId, string? transcript = null)
+    {
+        var response = await client.PostAsJsonAsync("/ingestions", Payload(patientId, transcript));
         response.EnsureSuccessStatusCode();
         return (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("ingestionId").GetGuid();
     }
 
-    private static object Payload(string patientId) => new
+    private static object Payload(string patientId, string? transcript = null) => new
     {
         documentType = "SessionTranscript",
         doctorId = "doc-1",
@@ -140,8 +204,23 @@ public class RetryEndpointTests(IngestionApiFixture fixture) : IClassFixture<Ing
         sessionId = $"sess-{patientId}",
         sequenceNumber = 1,
         language = "en",
-        transcript = Transcript,
+        transcript = transcript ?? Transcript,
     };
+
+    private async Task<List<string>> ReadDocumentChunksAsync(string patientId)
+    {
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(
+            "SELECT verbatim_text FROM chunks WHERE document_id = $1 ORDER BY chunk_index", connection);
+        command.Parameters.AddWithValue($"sess-{patientId}#1");
+
+        var texts = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+            texts.Add(reader.GetString(0));
+        return texts;
+    }
 
     private static async Task<JsonElement> ReadStatusAsync(HttpClient client, Guid ingestionId) =>
         await client.GetFromJsonAsync<JsonElement>($"/ingestions/{ingestionId}");

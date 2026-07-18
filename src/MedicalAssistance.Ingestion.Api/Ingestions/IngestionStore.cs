@@ -32,6 +32,12 @@ public enum RetryOutcome
 
     /// <summary>It is not in a state that can be rerun — only a Failed Ingestion can.</summary>
     NotRetryable,
+
+    /// <summary>
+    /// It failed, but a later submission of the same Document has completed since.
+    /// Rerunning it would replace the newer version with the older one.
+    /// </summary>
+    Overtaken,
 }
 
 /// <summary>
@@ -137,14 +143,30 @@ public sealed class IngestionStore(IngestionDbContext db)
     /// usually taken because whatever broke has been fixed; inheriting a spent
     /// budget would leave a document unrecoverable forever because of an outage
     /// that is long over.
+    ///
+    /// A failure that a later submission has already completed over is
+    /// <see cref="RetryOutcome.Overtaken"/> rather than rerunnable. Completing it
+    /// would supersede the newer version with the older one, silently reverting
+    /// the document to text a doctor had already replaced — the one outcome a
+    /// rerun must never produce.
     /// </summary>
     public async Task<(RetryOutcome Outcome, string? CurrentStatus)> TryRetryAsync(
         Guid id, CancellationToken ct = default)
     {
-        // Conditional on Failed in the same statement, so a rerun cannot be
-        // started for work that has meanwhile been picked up by a worker.
+        // Both conditions live in the same statement as the update, so neither a
+        // worker picking this up nor a correction landing mid-call can slip
+        // between the check and the requeue.
         var requeued = await db.Ingestions
-            .Where(i => i.Id == id && i.Status == "Failed")
+            .Where(i => i.Id == id
+                        && i.Status == "Failed"
+                        && !db.Ingestions.Any(newer =>
+                            newer.Id != i.Id
+                            && newer.Status == "Completed"
+                            && newer.CreatedAt > i.CreatedAt
+                            && newer.DocumentType == i.DocumentType
+                            && newer.PatientId == i.PatientId
+                            && newer.SessionId == i.SessionId
+                            && newer.SequenceNumber == i.SequenceNumber))
             .ExecuteUpdateAsync(
                 setters => setters
                     .SetProperty(i => i.Status, "Queued")
@@ -160,7 +182,15 @@ public sealed class IngestionStore(IngestionDbContext db)
             .Where(i => i.Id == id)
             .Select(i => i.Status)
             .FirstOrDefaultAsync(ct);
-        return current is null ? (RetryOutcome.NotFound, null) : (RetryOutcome.NotRetryable, current);
+
+        // Still Failed, yet not requeued: the only other condition is the one
+        // above, so a newer version of this document has landed.
+        return current switch
+        {
+            null => (RetryOutcome.NotFound, null),
+            "Failed" => (RetryOutcome.Overtaken, current),
+            _ => (RetryOutcome.NotRetryable, current),
+        };
     }
 
     /// <summary>Durably records a submitted Document as a Queued Ingestion (with content hash and raw payload) and returns its id.</summary>
