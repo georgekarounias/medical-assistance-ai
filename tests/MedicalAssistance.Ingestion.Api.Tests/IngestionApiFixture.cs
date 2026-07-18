@@ -1,3 +1,4 @@
+using MedicalAssistance.Ingestion.Api.Security;
 using MedicalAssistance.Ingestion.Api.Tests.Fakes;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.AI;
@@ -25,6 +26,12 @@ public sealed class IngestionApiFixture : IAsyncLifetime
     /// <inheritdoc cref="MinChunkTokens" />
     public const int MaxChunkTokens = 40;
 
+    /// <summary>The secret every client created here sends by default.</summary>
+    public const string ApiKey = "test-api-key-primary";
+
+    /// <summary>A second valid secret — the state the service is in mid-rotation.</summary>
+    public const string RotationApiKey = "test-api-key-secondary";
+
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("pgvector/pgvector:pg17").Build();
 
     public ScriptedChatClient ChatClient { get; } = new();
@@ -47,13 +54,15 @@ public sealed class IngestionApiFixture : IAsyncLifetime
     /// Queued for as long as a test needs them there.
     /// </summary>
     public WebApplicationFactory<Program> CreateFactory(ScriptedChatClient chatClient, int workerCount = 4) =>
-        new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        new AuthenticatedFactory().WithWebHostBuilder(builder =>
         {
             builder.UseSetting("ConnectionStrings:Postgres", ConnectionString);
             builder.UseSetting("Ingestion:WorkerCount", workerCount.ToString());
             builder.UseSetting("Embeddings:Dimensions", EmbeddingDimensions.ToString());
             builder.UseSetting("Chunking:MinTokens", MinChunkTokens.ToString());
             builder.UseSetting("Chunking:MaxTokens", MaxChunkTokens.ToString());
+            builder.UseSetting("Authentication:ApiKeys:0", ApiKey);
+            builder.UseSetting("Authentication:ApiKeys:1", RotationApiKey);
             builder.ConfigureServices(services =>
             {
                 services.AddSingleton<IChatClient>(chatClient);
@@ -61,6 +70,20 @@ public sealed class IngestionApiFixture : IAsyncLifetime
                     new DeterministicEmbeddingGenerator(EmbeddingDimensions));
             });
         });
+
+    /// <summary>
+    /// Sends the API secret on every client this fixture hands out, so tests
+    /// exercise the authenticated path the backend really uses. A test that
+    /// wants an unauthenticated caller removes the header from its own client.
+    /// </summary>
+    private sealed class AuthenticatedFactory : WebApplicationFactory<Program>
+    {
+        protected override void ConfigureClient(HttpClient client)
+        {
+            client.DefaultRequestHeaders.Add(ApiKeyAuthentication.HeaderName, ApiKey);
+            base.ConfigureClient(client);
+        }
+    }
 
     public async Task DisposeAsync()
     {

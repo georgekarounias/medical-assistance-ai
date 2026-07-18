@@ -1,5 +1,8 @@
 using System.Threading.Channels;
 using MedicalAssistance.Ingestion.Api.Ingestions;
+using MedicalAssistance.Ingestion.Api.Security;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -12,6 +15,16 @@ var builder = WebApplication.CreateBuilder(args);
 
 var connectionString = builder.Configuration.GetConnectionString("Postgres")
     ?? throw new InvalidOperationException("ConnectionStrings:Postgres is required.");
+
+// Refuse to start without a secret rather than starting wide open: this service
+// holds patient data and has no other gate in front of it (ADR-0007).
+if (builder.Configuration.GetSection(ApiKeyAuthentication.KeysConfigurationPath).Get<string[]>()
+    is not { Length: > 0 } configuredKeys || configuredKeys.All(string.IsNullOrWhiteSpace))
+{
+    throw new InvalidOperationException(
+        $"{ApiKeyAuthentication.KeysConfigurationPath} must contain at least one API secret. " +
+        "Configure two while rotating keys.");
+}
 var dataSourceBuilder = new NpgsqlDataSourceBuilder(connectionString);
 dataSourceBuilder.UseVector();
 var dataSource = dataSourceBuilder.Build();
@@ -40,6 +53,33 @@ builder.Services.AddSwaggerGen(options =>
     options.IncludeXmlComments(
         Path.Combine(AppContext.BaseDirectory, "MedicalAssistance.Ingestion.Api.xml"),
         includeControllerXmlComments: true);
+
+    options.AddSecurityDefinition(ApiKeyAuthentication.SchemeName, new OpenApiSecurityScheme
+    {
+        Type = SecuritySchemeType.ApiKey,
+        In = ParameterLocation.Header,
+        Name = ApiKeyAuthentication.HeaderName,
+        Description =
+            "Shared secret issued to the backend (ADR-0007). Two keys are accepted at once, " +
+            "so keys can be rotated without downtime.",
+    });
+    options.AddSecurityRequirement(document => new OpenApiSecurityRequirement
+    {
+        [new OpenApiSecuritySchemeReference(ApiKeyAuthentication.SchemeName, document)] = [],
+    });
+});
+
+builder.Services
+    .AddAuthentication(ApiKeyAuthentication.SchemeName)
+    .AddScheme<AuthenticationSchemeOptions, ApiKeyAuthenticationHandler>(ApiKeyAuthentication.SchemeName, null);
+
+builder.Services.AddAuthorization(options =>
+{
+    // Applied to every endpoint that does not opt out, so a new controller is
+    // protected by default instead of by remembering an attribute.
+    options.FallbackPolicy = new AuthorizationPolicyBuilder()
+        .RequireAuthenticatedUser()
+        .Build();
 });
 
 builder.Services.AddDbContext<IngestionDbContext>(options =>
@@ -105,6 +145,9 @@ app.UseSwaggerUI(options =>
 {
     options.SwaggerEndpoint("/swagger/v1/swagger.json", "Clinical Document Ingestion API v1");
 });
+
+app.UseAuthentication();
+app.UseAuthorization();
 
 app.MapControllers();
 
