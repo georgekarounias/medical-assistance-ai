@@ -67,10 +67,66 @@ public sealed class TranscriptIngestionStrategy
 
     private async Task<ChunkPlan> RequestChunkPlanAsync(IReadOnlyList<string> lines, CancellationToken ct)
     {
-        var response = await _chunkingAgent.RunAsync(BuildChunkingPrompt(lines), cancellationToken: ct);
-        var json = StripCodeFences(response.Text);
-        return JsonSerializer.Deserialize<ChunkPlan>(json, PlanJson)
-            ?? throw new InvalidOperationException("Chunking agent returned an empty plan.");
+        // Never trust the agent's output blindly: validate, allow ONE corrective
+        // retry naming the violation, then fail honestly — no fallback chunking.
+        var prompt = BuildChunkingPrompt(lines);
+        var (plan, violation) = await TryGetValidPlanAsync(prompt, lines.Count, ct);
+        if (plan is not null)
+            return plan;
+
+        var retryPrompt = prompt +
+            $"\n\nYour previous chunk plan was invalid: {violation} " +
+            "Return a corrected plan following the same JSON contract.";
+        (plan, violation) = await TryGetValidPlanAsync(retryPrompt, lines.Count, ct);
+        return plan ?? throw new InvalidChunkPlanException(violation!);
+    }
+
+    private async Task<(ChunkPlan? Plan, string? Violation)> TryGetValidPlanAsync(string prompt, int lineCount, CancellationToken ct)
+    {
+        var response = await _chunkingAgent.RunAsync(prompt, cancellationToken: ct);
+        ChunkPlan? plan;
+        try
+        {
+            plan = JsonSerializer.Deserialize<ChunkPlan>(StripCodeFences(response.Text), PlanJson);
+        }
+        catch (JsonException)
+        {
+            return (null, "the response was not valid JSON.");
+        }
+
+        if (plan is null)
+            return (null, "the response was empty.");
+        var violation = ValidatePlan(plan, lineCount);
+        return violation is null ? (plan, null) : (null, violation);
+    }
+
+    private static string? ValidatePlan(ChunkPlan plan, int lineCount)
+    {
+        if (plan.Chunks is not { Count: > 0 })
+            return "the plan contains no chunks.";
+        if (string.IsNullOrWhiteSpace(plan.Summary))
+            return "the plan is missing the summary.";
+
+        var ordered = plan.Chunks.OrderBy(c => c.StartLine).ToList();
+        plan.Chunks.Clear();
+        plan.Chunks.AddRange(ordered);
+
+        var expectedStart = 0;
+        for (var i = 0; i < ordered.Count; i++)
+        {
+            var chunk = ordered[i];
+            if (chunk.EndLine < chunk.StartLine)
+                return $"chunk {i + 1} ends at line {chunk.EndLine} before it starts at line {chunk.StartLine}.";
+            if (chunk.StartLine != expectedStart)
+                return $"chunk {i + 1} starts at line {chunk.StartLine} but expected line {expectedStart} — " +
+                       "chunks must be contiguous and non-overlapping, covering every line.";
+            expectedStart = chunk.EndLine + 1;
+        }
+
+        if (expectedStart != lineCount)
+            return $"the plan covers lines up to {expectedStart - 1} but the transcript has lines 0 to {lineCount - 1} — " +
+                   "chunks must be contiguous and non-overlapping, covering every line.";
+        return null;
     }
 
     private static string BuildChunkingPrompt(IReadOnlyList<string> lines)
@@ -123,3 +179,10 @@ public sealed class TranscriptIngestionStrategy
     private sealed record AssembledChunk(
         string Kind, string VerbatimText, string? ContextBlurb, string? SourceRefJson, string EmbeddingInput);
 }
+
+/// <summary>
+/// The chunking agent produced an invalid plan twice in a row; the ingestion
+/// is marked Failed rather than degrading — an explicit design decision.
+/// </summary>
+public sealed class InvalidChunkPlanException(string violation)
+    : Exception($"Chunking agent produced an invalid chunk plan after a corrective retry: {violation}");
