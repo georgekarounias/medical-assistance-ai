@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using MedicalAssistance.Ingestion.Api.Realtime;
 
 namespace MedicalAssistance.Ingestion.Api.Ingestions;
 
@@ -44,11 +45,10 @@ public sealed class IngestionWorker(
                 {
                     logger.LogError(
                         "Ingestion {IngestionId} gave up after {MaxAttempts} attempts", ingestionId, maxAttempts);
-                    await store.MarkFailedAsync(
+                    await FailAsync(
                         ingestionId,
                         $"Gave up after {maxAttempts} attempts without completing. " +
-                        "Resubmit the document to try again with a fresh set of attempts.",
-                        ct);
+                        "Resubmit the document to try again with a fresh set of attempts.");
                     continue;
                 }
 
@@ -63,10 +63,34 @@ public sealed class IngestionWorker(
             catch (Exception exception)
             {
                 logger.LogError(exception, "Ingestion {IngestionId} failed", ingestionId);
-                await using var failureScope = scopeFactory.CreateAsyncScope();
-                await failureScope.ServiceProvider.GetRequiredService<IngestionStore>()
-                    .MarkFailedAsync(ingestionId, exception.Message, CancellationToken.None);
+                await FailAsync(ingestionId, exception.Message);
             }
+        }
+    }
+
+    /// <summary>
+    /// Records a failure and tells the doctor why. The announcement runs on its
+    /// own scope and its own cancellation, because the reason a run failed may
+    /// well be the reason its scope is unusable.
+    /// </summary>
+    private async Task FailAsync(Guid ingestionId, string reason)
+    {
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var store = scope.ServiceProvider.GetRequiredService<IngestionStore>();
+        await store.MarkFailedAsync(ingestionId, reason, CancellationToken.None);
+
+        // The stored payload is the only place the doctor and patient are still
+        // known here — the run that had them may have died mid-flight.
+        try
+        {
+            var request = await store.LoadRequestAsync(ingestionId, CancellationToken.None);
+            await scope.ServiceProvider.GetRequiredService<IngestionStatusPublisher>().PublishAsync(
+                ingestionId, request.DoctorId, request.PatientId, IngestionStages.Failed, reason);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception, "Could not announce the failure of ingestion {IngestionId}", ingestionId);
         }
     }
 }

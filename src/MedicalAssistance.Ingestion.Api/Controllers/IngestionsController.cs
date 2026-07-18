@@ -1,5 +1,6 @@
 using System.Threading.Channels;
 using MedicalAssistance.Ingestion.Api.Ingestions;
+using MedicalAssistance.Ingestion.Api.Realtime;
 using Microsoft.AspNetCore.Mvc;
 
 namespace MedicalAssistance.Ingestion.Api.Controllers;
@@ -12,7 +13,8 @@ namespace MedicalAssistance.Ingestion.Api.Controllers;
 [ApiController]
 [Route("ingestions")]
 [Produces("application/json")]
-public sealed class IngestionsController(IngestionStore store, Channel<Guid> queue) : ControllerBase
+public sealed class IngestionsController(
+    IngestionStore store, Channel<Guid> queue, IngestionStatusPublisher statusPublisher) : ControllerBase
 {
     /// <summary>Submits a clinical Document for ingestion.</summary>
     /// <remarks>
@@ -106,6 +108,8 @@ public sealed class IngestionsController(IngestionStore store, Channel<Guid> que
 
         var ingestionId = await store.CreateQueuedAsync(request, ct);
         await queue.Writer.WriteAsync(ingestionId, ct);
+        await statusPublisher.PublishAsync(
+            ingestionId, request.DoctorId, request.PatientId, IngestionStages.Queued, ct: ct);
         return Accepted(LocationOf(ingestionId), new IngestionAccepted { IngestionId = ingestionId });
     }
 

@@ -91,6 +91,7 @@ builder.Services.TryAddSingleton<IChatClient>(new UnconfiguredChatClient());
 builder.Services.TryAddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(new UnconfiguredEmbeddingGenerator());
 
 builder.Services.AddSingleton<AgentInstructionProvider>();
+builder.Services.AddSingleton<IngestionStatusPublisher>();
 builder.Services.AddScoped<IngestionStore>();
 builder.Services.AddScoped<TranscriptIngestionStrategy>();
 builder.Services.AddSingleton(Channel.CreateUnbounded<Guid>());

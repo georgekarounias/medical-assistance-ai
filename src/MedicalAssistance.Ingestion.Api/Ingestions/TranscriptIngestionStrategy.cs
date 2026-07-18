@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using MedicalAssistance.Ingestion.Api.Realtime;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Pgvector;
@@ -23,13 +24,17 @@ public sealed class TranscriptIngestionStrategy
     private readonly IngestionStore _store;
     private readonly ChunkSizeGuardrails _sizeGuardrails;
 
+    private readonly IngestionStatusPublisher _statusPublisher;
+
     public TranscriptIngestionStrategy(
         IChatClient chatClient,
         IEmbeddingGenerator<string, Embedding<float>> embeddingGenerator,
         IngestionStore store,
         AgentInstructionProvider instructionProvider,
+        IngestionStatusPublisher statusPublisher,
         IConfiguration configuration)
     {
+        _statusPublisher = statusPublisher;
         // A Microsoft Agent Framework agent wrapping whatever IChatClient is
         // configured — Azure OpenAI in production, a scripted fake in tests.
         // Instructions come from the database via the startup-loaded singleton
@@ -52,10 +57,13 @@ public sealed class TranscriptIngestionStrategy
     public async Task IngestAsync(Guid ingestionId, IngestionRequest request, CancellationToken ct)
     {
         var lines = SplitIntoLines(request.Transcript);
+
+        await PublishStageAsync(ingestionId, request, IngestionStages.Chunking, ct);
         var plan = await RequestChunkPlanAsync(lines, ct);
         var sizedChunks = _sizeGuardrails.Apply(lines, plan.Chunks);
         var chunks = AssembleChunks(lines, sizedChunks, plan.Summary);
 
+        await PublishStageAsync(ingestionId, request, IngestionStages.Embedding, ct);
         var embeddings = await _embeddingGenerator.GenerateAsync(chunks.Select(c => c.EmbeddingInput).ToList(), cancellationToken: ct);
         var records = chunks
             .Select((chunk, i) => new ChunkToStore(
@@ -63,9 +71,17 @@ public sealed class TranscriptIngestionStrategy
                 new Vector(embeddings[i].Vector)))
             .ToList();
 
+        await PublishStageAsync(ingestionId, request, IngestionStages.Storing, ct);
         var documentId = $"{request.SessionId}#{request.SequenceNumber}";
         await _store.CompleteWithChunksAsync(ingestionId, documentId, request, records, _instructionVersion, _chatModel, ct);
+
+        // Announced only after the commit: the doctor is told the document is
+        // searchable when it genuinely is.
+        await PublishStageAsync(ingestionId, request, IngestionStages.Completed, ct);
     }
+
+    private Task PublishStageAsync(Guid ingestionId, IngestionRequest request, string stage, CancellationToken ct) =>
+        _statusPublisher.PublishAsync(ingestionId, request.DoctorId, request.PatientId, stage, ct: ct);
 
     private static IReadOnlyList<string> SplitIntoLines(string transcript) =>
         transcript
