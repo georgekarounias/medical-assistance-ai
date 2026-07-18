@@ -44,6 +44,13 @@ public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> opti
             entity.Property(i => i.ChatModel).HasColumnName("chat_model");
             entity.Property(i => i.CreatedAt).HasColumnName("created_at");
             entity.Property(i => i.UpdatedAt).HasColumnName("updated_at");
+
+            // Every submission asks two questions before anything durable
+            // happens — "has this exact content already been sent for this
+            // identity?" and "has it been sent for this patient at all?" — so
+            // neither may degrade into a scan of the table.
+            entity.HasIndex(i => new { i.SessionId, i.SequenceNumber, i.ContentHash });
+            entity.HasIndex(i => i.ContentHash);
         });
 
         modelBuilder.Entity<AgentInstruction>(entity =>

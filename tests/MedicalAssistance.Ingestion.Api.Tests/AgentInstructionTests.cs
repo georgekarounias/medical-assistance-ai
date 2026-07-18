@@ -65,7 +65,10 @@ public class AgentInstructionTests(IngestionApiFixture fixture) : IClassFixture<
             sessionId = "sess-instr",
             sequenceNumber,
             language = "en",
-            transcript = "Doctor: Good morning.\nPatient: I have headaches.",
+            // Each visit needs its own words: identical content for one patient
+            // is deduplicated whatever sequence number it carries, and this test
+            // needs three real ingestions to compare instruction stamps across.
+            transcript = $"Doctor: Good morning, this is visit {sequenceNumber}.\nPatient: I have headaches.",
         });
         response.EnsureSuccessStatusCode();
         var ingestionId = (await response.Content.ReadFromJsonAsync<JsonElement>())

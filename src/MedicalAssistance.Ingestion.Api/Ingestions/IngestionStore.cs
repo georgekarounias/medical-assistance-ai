@@ -22,6 +22,22 @@ public sealed record ChunkToStore(
     Vector Embedding);
 
 /// <summary>
+/// An existing Ingestion of the same Document identity carrying byte-for-byte
+/// identical content — the input to the dedup decision. Lifecycle strings stay
+/// inside the store; callers ask what the outcome was, not how it is spelled.
+/// </summary>
+/// <param name="Id">Identifier of the existing Ingestion.</param>
+/// <param name="Status">Its lifecycle state.</param>
+public sealed record IdenticalIngestion(Guid Id, string Status)
+{
+    /// <summary>The identical content is already ingested; re-running it would only reproduce what exists.</summary>
+    public bool Succeeded => Status == "Completed";
+
+    /// <summary>The identical content failed to ingest; re-posting it is a retry, not a duplicate.</summary>
+    public bool Failed => Status == "Failed";
+}
+
+/// <summary>
 /// All database access for the ingestion pipeline. Owns the lifecycle of an
 /// Ingestion record and the atomic chunk commit; nothing outside this class
 /// writes to the database.
@@ -30,10 +46,56 @@ public sealed class IngestionStore(IngestionDbContext db)
 {
     private static readonly JsonSerializerOptions PayloadJson = new(JsonSerializerDefaults.Web);
 
+    /// <summary>
+    /// Finds the most recent Ingestion for the same Document identity whose
+    /// submitted content is byte-for-byte identical, or null when this content
+    /// has never been submitted for this identity. Same identity with different
+    /// content is a Correction, not a duplicate, and is not reported here.
+    /// </summary>
+    public Task<IdenticalIngestion?> FindIdenticalAsync(IngestionRequest request, CancellationToken ct = default)
+    {
+        var (_, contentHash) = SerializeAndHash(request);
+        return db.Ingestions.AsNoTracking()
+            .Where(i => i.DocumentType == request.DocumentType
+                        && i.SessionId == request.SessionId
+                        && i.SequenceNumber == request.SequenceNumber
+                        && i.ContentHash == contentHash)
+            .OrderByDescending(i => i.CreatedAt)
+            .Select(i => new IdenticalIngestion(i.Id, i.Status))
+            .FirstOrDefaultAsync(ct)!;
+    }
+
+    /// <summary>
+    /// Finds a completed Ingestion of this exact content filed under a different
+    /// identity — the same recording re-uploaded as a new session or a new
+    /// sequence number. Ingesting it again would put the same passages in the
+    /// patient's record twice and let the chat quote one encounter as if it were
+    /// two, so it is skipped. Only completed ingestions qualify: content that is
+    /// still in flight or that failed has nothing to deduplicate against.
+    /// </summary>
+    public Task<IdenticalIngestion?> FindSameContentElsewhereAsync(
+        IngestionRequest request, CancellationToken ct = default)
+    {
+        var (_, contentHash) = SerializeAndHash(request);
+        return db.Ingestions.AsNoTracking()
+            .Where(i => i.ContentHash == contentHash && i.Status == "Completed")
+            .OrderBy(i => i.CreatedAt)
+            .Select(i => new IdenticalIngestion(i.Id, i.Status))
+            .FirstOrDefaultAsync(ct)!;
+    }
+
+    /// <summary>
+    /// Returns a Failed Ingestion to the queue for a fresh, complete rerun from
+    /// its stored payload — there are no stage checkpoints to resume from
+    /// (ADR-0003), so the earlier failure leaves nothing to clean up.
+    /// </summary>
+    public Task RequeueAsync(Guid id, CancellationToken ct = default) =>
+        UpdateStatusAsync(id, "Queued", null, ct);
+
     /// <summary>Durably records a submitted Document as a Queued Ingestion (with content hash and raw payload) and returns its id.</summary>
     public async Task<Guid> CreateQueuedAsync(IngestionRequest request, CancellationToken ct = default)
     {
-        var payload = JsonSerializer.Serialize(request, PayloadJson);
+        var (payload, contentHash) = SerializeAndHash(request);
         var record = new IngestionRecord
         {
             Id = Guid.NewGuid(),
@@ -43,7 +105,7 @@ public sealed class IngestionStore(IngestionDbContext db)
             SessionId = request.SessionId,
             SequenceNumber = request.SequenceNumber,
             Status = "Queued",
-            ContentHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload))),
+            ContentHash = contentHash,
             Payload = payload,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
@@ -115,6 +177,35 @@ public sealed class IngestionStore(IngestionDbContext db)
         ingestion.ChatModel = chatModel;
         ingestion.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// The submitted payload, plus a hash of what the document actually *is*.
+    ///
+    /// The hash deliberately excludes <see cref="IngestionRequest.SessionId"/>
+    /// and <see cref="IngestionRequest.SequenceNumber"/> — where a document sits
+    /// in a session's numbering is filing, not content — so the same recording
+    /// re-uploaded under a fresh session or sequence number is still recognised
+    /// as already ingested. Everything else is in scope: the patient and doctor
+    /// (so one patient's document can never dedup against another's), and the
+    /// clinical date and language (so correcting them re-ingests and the stored
+    /// chunk metadata is corrected with them).
+    /// </summary>
+    private static (string Payload, string ContentHash) SerializeAndHash(IngestionRequest request)
+    {
+        var payload = JsonSerializer.Serialize(request, PayloadJson);
+        var content = JsonSerializer.Serialize(
+            new
+            {
+                request.DocumentType,
+                request.PatientId,
+                request.DoctorId,
+                request.SessionDate,
+                request.Language,
+                request.Transcript,
+            },
+            PayloadJson);
+        return (payload, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content))));
     }
 
     private async Task UpdateStatusAsync(Guid id, string status, string? errorMessage, CancellationToken ct)

@@ -40,7 +40,8 @@ Scanned/handwritten documents (no text layer) are **out of scope** — no OCR pa
 `DoctorNote` carries `noteId` + `text` (+ optional `sessionId`); `LabReport`/`ImagingReport` carry base64 `pdfContent` + document id (+ `imageLink` for imaging).
 
 - Returns `202` + `ingestionId`. `409` if the same document identity is already Queued/Processing.
-- Identical content hash + prior success → no-op (`duplicate: true`). Same identity + different content → **Correction** (supersedes old chunks/rows transactionally). New `sequenceNumber` on an existing session → **Continuation**.
+- Identical content hash + prior success → no-op (`duplicate: true`), **whatever identity it arrives under**. The hash covers what the document is — type, patient, doctor, clinical date, language, content — but not `sessionId`/`sequenceNumber`, which are filing rather than content. So the same recording re-uploaded as a new session or a fresh sequence number is skipped instead of duplicating knowledge in the patient's record, while the same text for a *different* patient is ingested normally. Identical content + prior failure → retry of that same ingestion.
+- Same identity + different content → **Correction** (supersedes old chunks/rows transactionally). New `sequenceNumber` on an existing session, with different content → **Continuation**.
 
 Full surface:
 

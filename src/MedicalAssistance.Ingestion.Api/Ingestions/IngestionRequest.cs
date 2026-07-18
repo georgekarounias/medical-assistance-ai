@@ -75,9 +75,16 @@ public sealed record IngestionStatus
     }
 }
 
-/// <summary>Acknowledgement that a Document was accepted and queued for ingestion.</summary>
+/// <summary>Acknowledgement that a Document was accepted for ingestion.</summary>
 public sealed record IngestionAccepted
 {
-    /// <summary>Identifier of the created Ingestion; use it to poll status at <c>GET /ingestions/{id}</c>.</summary>
+    /// <summary>Identifier of the Ingestion; use it to poll status at <c>GET /ingestions/{id}</c>.</summary>
     public required Guid IngestionId { get; init; }
+
+    /// <summary>
+    /// True when this exact content had already been ingested successfully for
+    /// this document identity: nothing was reprocessed and the id refers to the
+    /// existing Ingestion. A double-click or a client retry lands here.
+    /// </summary>
+    public bool Duplicate { get; init; }
 }

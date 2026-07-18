@@ -34,7 +34,7 @@ public class ChunkPlanValidationTests(IngestionApiFixture fixture) : IClassFixtu
         fixture.ChatClient.EnqueueResponse(ValidPlan);
 
         var client = fixture.Factory.CreateClient();
-        var ingestionId = await PostTranscriptAsync(client, sequenceNumber: 1);
+        var ingestionId = await PostTranscriptAsync(client, patientId: "pat-retry");
         var (status, detail) = await WaitForTerminalStatusAsync(client, ingestionId);
 
         Assert.True(status == "Completed", $"Expected Completed but got: {detail}");
@@ -54,7 +54,7 @@ public class ChunkPlanValidationTests(IngestionApiFixture fixture) : IClassFixtu
         fixture.ChatClient.EnqueueResponse(InvalidPlanWithGap);
 
         var client = fixture.Factory.CreateClient();
-        var ingestionId = await PostTranscriptAsync(client, sequenceNumber: 2);
+        var ingestionId = await PostTranscriptAsync(client, patientId: "pat-twice-invalid");
         var (status, detail) = await WaitForTerminalStatusAsync(client, ingestionId);
 
         Assert.True(status == "Failed", $"Expected Failed but got: {detail}");
@@ -63,15 +63,17 @@ public class ChunkPlanValidationTests(IngestionApiFixture fixture) : IClassFixtu
         Assert.Equal(0, await CountChunksAsync(ingestionId));
     }
 
-    private static async Task<Guid> PostTranscriptAsync(HttpClient client, int sequenceNumber)
+    // Each test uses its own patient: one patient's identical content is
+    // deduplicated across sessions, and these tests need real ingestions.
+    private static async Task<Guid> PostTranscriptAsync(HttpClient client, string patientId)
     {
         var response = await client.PostAsJsonAsync("/ingestions", new
         {
             documentType = "SessionTranscript",
             doctorId = "doc-1",
-            patientId = "pat-guard",
+            patientId,
             sessionId = "sess-guard",
-            sequenceNumber,
+            sequenceNumber = 1,
             language = "en",
             transcript = """
                 Doctor: Good morning, what brings you in today?
