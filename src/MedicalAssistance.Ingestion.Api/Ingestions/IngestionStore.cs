@@ -193,6 +193,41 @@ public sealed class IngestionStore(IngestionDbContext db)
             .Select(i => new IngestionStatus(i.Id, i.Status, i.ErrorMessage))
             .FirstOrDefaultAsync(ct);
 
+    /// <summary>
+    /// Lists a doctor's Ingestions, newest activity first. With
+    /// <paramref name="activeOnly"/> this is the resync answer — everything
+    /// accepted but not yet finished — which is what a client asks for after
+    /// losing its hub connection, so no events ever need replaying.
+    ///
+    /// Capped rather than paged: the resync list is inherently short, and a
+    /// caller asking for history has no use case yet that a page cursor would
+    /// serve better than a limit.
+    /// </summary>
+    public Task<List<IngestionSummary>> ListForDoctorAsync(
+        string doctorId, bool activeOnly, int limit, CancellationToken ct = default)
+    {
+        var query = db.Ingestions.AsNoTracking().Where(i => i.DoctorId == doctorId);
+        if (activeOnly)
+            query = query.Where(i => i.Status == "Queued" || i.Status == "Processing");
+
+        return query
+            .OrderByDescending(i => i.UpdatedAt)
+            .Take(limit)
+            .Select(i => new IngestionSummary
+            {
+                IngestionId = i.Id,
+                DocumentType = i.DocumentType,
+                PatientId = i.PatientId,
+                SessionId = i.SessionId,
+                SequenceNumber = i.SequenceNumber,
+                Status = i.Status,
+                ErrorMessage = i.ErrorMessage,
+                CreatedAt = i.CreatedAt,
+                UpdatedAt = i.UpdatedAt,
+            })
+            .ToListAsync(ct);
+    }
+
     /// <summary>Reloads the original submitted payload of an Ingestion — the input for processing and rerun-from-scratch.</summary>
     public async Task<IngestionRequest> LoadRequestAsync(Guid id, CancellationToken ct = default)
     {

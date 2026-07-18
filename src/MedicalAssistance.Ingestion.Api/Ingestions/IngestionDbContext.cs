@@ -52,6 +52,10 @@ public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> opti
             // neither may degrade into a scan of the table.
             entity.HasIndex(i => new { i.SessionId, i.SequenceNumber, i.ContentHash });
             entity.HasIndex(i => i.ContentHash);
+
+            // The resync query: one doctor's unfinished work, asked on every
+            // reconnect, against a table that only ever grows.
+            entity.HasIndex(i => new { i.DoctorId, i.Status });
         });
 
         modelBuilder.Entity<AgentInstruction>(entity =>

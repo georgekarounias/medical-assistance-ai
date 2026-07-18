@@ -113,6 +113,39 @@ public sealed class IngestionsController(
         return Accepted(LocationOf(ingestionId), new IngestionAccepted { IngestionId = ingestionId });
     }
 
+    /// <summary>Lists a doctor's Ingestions — by default the ones still running.</summary>
+    /// <remarks>
+    /// The resync call. A client that lost its hub connection asks this once and
+    /// is caught up, which is why status events need no replay: they are hints,
+    /// and this is the truth. Ordered by most recent activity first.
+    /// </remarks>
+    /// <param name="doctorId">The doctor whose ingestions to list. Required.</param>
+    /// <param name="active">
+    /// <c>true</c> (the default) returns only Queued and Processing ingestions —
+    /// what a reconnecting client needs. <c>false</c> returns finished ones too.
+    /// </param>
+    /// <param name="limit">Maximum ingestions to return; 1–200, default 100.</param>
+    /// <param name="ct">Cancellation token for the request.</param>
+    /// <response code="200">The matching ingestions, newest activity first.</response>
+    /// <response code="400">The query is missing <c>doctorId</c> or the limit is out of range.</response>
+    [HttpGet]
+    [ProducesResponseType<IReadOnlyList<IngestionSummary>>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ValidationProblemDetails>(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> List(
+        [FromQuery] string? doctorId, [FromQuery] bool active = true, [FromQuery] int limit = 100,
+        CancellationToken ct = default)
+    {
+        var errors = new Dictionary<string, string[]>();
+        if (string.IsNullOrWhiteSpace(doctorId))
+            errors["doctorId"] = ["A doctor id is required."];
+        if (limit is < 1 or > 200)
+            errors["limit"] = ["The limit must be between 1 and 200."];
+        if (errors.Count > 0)
+            return ValidationProblem(new ValidationProblemDetails(errors));
+
+        return Ok(await store.ListForDoctorAsync(doctorId!, active, limit, ct));
+    }
+
     /// <summary>Returns the current status of one Ingestion.</summary>
     /// <param name="id">The ingestion id returned by the submit call.</param>
     /// <param name="ct">Cancellation token for the request.</param>

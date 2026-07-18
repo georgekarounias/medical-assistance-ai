@@ -80,6 +80,40 @@ public sealed record IngestionStatus
     }
 }
 
+/// <summary>
+/// One Ingestion as it appears in a list — enough for a reconnecting client to
+/// rebuild what it was showing, without a call per ingestion.
+/// </summary>
+public sealed record IngestionSummary
+{
+    /// <summary>Identifier of the Ingestion.</summary>
+    public required Guid IngestionId { get; init; }
+
+    /// <summary>The declared Document Type.</summary>
+    public required string DocumentType { get; init; }
+
+    /// <summary>Patient the document is about.</summary>
+    public required string PatientId { get; init; }
+
+    /// <summary>Session identity component (transcripts only).</summary>
+    public string? SessionId { get; init; }
+
+    /// <summary>Transcript ordinal within its Session (transcripts only).</summary>
+    public int? SequenceNumber { get; init; }
+
+    /// <summary>Lifecycle state, as on <c>GET /ingestions/{id}</c>.</summary>
+    public required string Status { get; init; }
+
+    /// <summary>Why it failed; present only for a Failed ingestion.</summary>
+    public string? ErrorMessage { get; init; }
+
+    /// <summary>When the document was accepted.</summary>
+    public required DateTimeOffset CreatedAt { get; init; }
+
+    /// <summary>When the ingestion last changed state.</summary>
+    public required DateTimeOffset UpdatedAt { get; init; }
+}
+
 /// <summary>Acknowledgement that a Document was accepted for ingestion.</summary>
 public sealed record IngestionAccepted
 {
