@@ -21,6 +21,19 @@ public sealed record ChunkToStore(
     string? SourceRefJson,
     Vector Embedding);
 
+/// <summary>What came of asking for an Ingestion to be rerun.</summary>
+public enum RetryOutcome
+{
+    /// <summary>No Ingestion has that id.</summary>
+    NotFound,
+
+    /// <summary>It had failed, and is now queued for a complete rerun.</summary>
+    Requeued,
+
+    /// <summary>It is not in a state that can be rerun — only a Failed Ingestion can.</summary>
+    NotRetryable,
+}
+
 /// <summary>
 /// An existing Ingestion of the same Document identity carrying byte-for-byte
 /// identical content — the input to the dedup decision. Lifecycle strings stay
@@ -117,21 +130,38 @@ public sealed class IngestionStore(IngestionDbContext db)
     /// <summary>
     /// Returns a Failed Ingestion to the queue for a fresh, complete rerun from
     /// its stored payload — there are no stage checkpoints to resume from
-    /// (ADR-0003), so the earlier failure leaves nothing to clean up.
+    /// (ADR-0003), so the earlier failure leaves nothing to clean up. Only a
+    /// Failed ingestion can be rerun; the outcome says why not, when not.
     ///
-    /// The attempt count starts over. Deciding to submit again is a deliberate
-    /// act, usually taken because whatever broke has been fixed; inheriting a
-    /// spent budget would make a document unrecoverable forever because of an
-    /// outage that is long over.
+    /// The attempt count starts over. Deciding to rerun is a deliberate act,
+    /// usually taken because whatever broke has been fixed; inheriting a spent
+    /// budget would leave a document unrecoverable forever because of an outage
+    /// that is long over.
     /// </summary>
-    public Task RequeueAsync(Guid id, CancellationToken ct = default) =>
-        db.Ingestions.Where(i => i.Id == id).ExecuteUpdateAsync(
-            setters => setters
-                .SetProperty(i => i.Status, "Queued")
-                .SetProperty(i => i.ErrorMessage, (string?)null)
-                .SetProperty(i => i.Attempts, 0)
-                .SetProperty(i => i.UpdatedAt, DateTimeOffset.UtcNow),
-            ct);
+    public async Task<(RetryOutcome Outcome, string? CurrentStatus)> TryRetryAsync(
+        Guid id, CancellationToken ct = default)
+    {
+        // Conditional on Failed in the same statement, so a rerun cannot be
+        // started for work that has meanwhile been picked up by a worker.
+        var requeued = await db.Ingestions
+            .Where(i => i.Id == id && i.Status == "Failed")
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(i => i.Status, "Queued")
+                    .SetProperty(i => i.ErrorMessage, (string?)null)
+                    .SetProperty(i => i.Attempts, 0)
+                    .SetProperty(i => i.UpdatedAt, DateTimeOffset.UtcNow),
+                ct);
+
+        if (requeued > 0)
+            return (RetryOutcome.Requeued, "Failed");
+
+        var current = await db.Ingestions.AsNoTracking()
+            .Where(i => i.Id == id)
+            .Select(i => i.Status)
+            .FirstOrDefaultAsync(ct);
+        return current is null ? (RetryOutcome.NotFound, null) : (RetryOutcome.NotRetryable, current);
+    }
 
     /// <summary>Durably records a submitted Document as a Queued Ingestion (with content hash and raw payload) and returns its id.</summary>
     public async Task<Guid> CreateQueuedAsync(IngestionRequest request, CancellationToken ct = default)

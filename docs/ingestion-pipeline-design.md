@@ -43,6 +43,8 @@ Scanned/handwritten documents (no text layer) are **out of scope** — no OCR pa
 - Identical content hash + prior success → no-op (`duplicate: true`), **whatever identity it arrives under**. The hash covers what the document is — type, patient, doctor, clinical date, language, content — but not `sessionId`/`sequenceNumber`, which are filing rather than content. So the same recording re-uploaded as a new session or a fresh sequence number is skipped instead of duplicating knowledge in the patient's record, while the same text for a *different* patient is ingested normally. Identical content + prior failure → retry of that same ingestion.
 - Same identity + different content → **Correction**: one transaction deletes the previous version's chunks, writes the new ones, and marks the previous ingestion `Superseded`. That status is load-bearing, not cosmetic — a replaced ingestion holds no chunks, so leaving it `Completed` would let dedup answer "already ingested" about deleted text and silently drop a re-upload of the original. New `sequenceNumber` on an existing session, with different content → **Continuation**.
 
+- `POST /ingestions/{id}/retry` reruns a **Failed** ingestion from its stored payload — the whole pipeline, no checkpoints — and restores its attempt budget, so a document that exhausted its automatic attempts is still recoverable once the cause is fixed. Only Failed is rerunnable; anything else is `409`.
+
 Full surface:
 
 | Endpoint | Purpose |

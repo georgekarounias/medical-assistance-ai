@@ -83,8 +83,11 @@ public sealed class IngestionsController(IngestionStore store, Channel<Guid> que
                 });
 
             case { Failed: true } failed:
-                await store.RequeueAsync(failed.Id, ct);
-                await queue.Writer.WriteAsync(failed.Id, ct);
+                // Identical content after a failure is a retry — the same rerun
+                // the retry endpoint performs, asked for a different way.
+                var (outcome, _) = await store.TryRetryAsync(failed.Id, ct);
+                if (outcome == RetryOutcome.Requeued)
+                    await queue.Writer.WriteAsync(failed.Id, ct);
                 return Accepted(LocationOf(failed.Id), new IngestionAccepted { IngestionId = failed.Id });
         }
 
@@ -119,6 +122,48 @@ public sealed class IngestionsController(IngestionStore store, Channel<Guid> que
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetStatus(Guid id, CancellationToken ct) =>
         await store.GetStatusAsync(id, ct) is { } status ? Ok(status) : NotFound();
+
+    /// <summary>Reruns a Failed Ingestion from the payload stored when it was submitted.</summary>
+    /// <remarks>
+    /// The document is never uploaded again: recovery is this one call. The
+    /// rerun is the whole pipeline from the beginning — chunking, embedding and
+    /// storage all happen afresh, because an ingestion keeps no stage
+    /// checkpoints to resume from (ADR-0003). It also restores the ingestion's
+    /// attempt budget, so a document that exhausted its automatic attempts can
+    /// still be recovered once the cause has been dealt with.
+    ///
+    /// Only a Failed ingestion can be rerun.
+    /// </remarks>
+    /// <param name="id">The ingestion id returned by the submit call.</param>
+    /// <param name="ct">Cancellation token for the request.</param>
+    /// <response code="202">The rerun was queued; poll <c>GET /ingestions/{id}</c> as before.</response>
+    /// <response code="404">No ingestion with this id exists.</response>
+    /// <response code="409">
+    /// The ingestion did not fail, so there is nothing to rerun. The problem
+    /// document names its current state.
+    /// </response>
+    [HttpPost("{id:guid}/retry")]
+    [ProducesResponseType<IngestionAccepted>(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> Retry(Guid id, CancellationToken ct)
+    {
+        var (outcome, currentStatus) = await store.TryRetryAsync(id, ct);
+        switch (outcome)
+        {
+            case RetryOutcome.NotFound:
+                return NotFound();
+
+            case RetryOutcome.NotRetryable:
+                return Problem(
+                    statusCode: StatusCodes.Status409Conflict,
+                    title: "This ingestion cannot be rerun.",
+                    detail: $"Only a Failed ingestion can be rerun; this one is {currentStatus}.");
+        }
+
+        await queue.Writer.WriteAsync(id, ct);
+        return Accepted(LocationOf(id), new IngestionAccepted { IngestionId = id });
+    }
 
     private static string LocationOf(Guid ingestionId) => $"/ingestions/{ingestionId}";
 
