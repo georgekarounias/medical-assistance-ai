@@ -6,24 +6,30 @@ namespace MedicalAssistance.Ingestion.Api.Ingestions;
 /// A clinical Document submitted for ingestion by the existing backend.
 /// The unit that flows through the pipeline; identified per Document Type
 /// (a transcript's identity is <see cref="SessionId"/> + <see cref="SequenceNumber"/>).
+///
+/// Mandatory fields are enforced by <see cref="IngestionRequestValidation"/>
+/// rather than by the deserializer: a missing field has to come back as a named
+/// field error, not as a deserialization failure keyed on the whole document.
+/// Nothing downstream of the controller ever sees an unvalidated request.
 /// </summary>
 public sealed record IngestionRequest
 {
-    /// <summary>The declared Document Type, supplied by the uploader — never inferred. Currently supported: <c>SessionTranscript</c>.</summary>
-    public required string DocumentType { get; init; }
+    /// <summary>The declared Document Type, supplied by the uploader — never inferred. Required. Currently supported: <c>SessionTranscript</c>.</summary>
+    public string DocumentType { get; init; } = null!;
 
-    /// <summary>Identifier of the doctor the document belongs to. Stamped on every chunk for access scoping.</summary>
-    public required string DoctorId { get; init; }
+    /// <summary>Identifier of the doctor the document belongs to. Required. Stamped on every chunk for access scoping.</summary>
+    public string DoctorId { get; init; } = null!;
 
-    /// <summary>Identifier of the patient the document is about. The universal retrieval filter and security boundary.</summary>
-    public required string PatientId { get; init; }
+    /// <summary>Identifier of the patient the document is about. Required. The universal retrieval filter and security boundary.</summary>
+    public string PatientId { get; init; } = null!;
 
-    /// <summary>Identifier of the Session (the real-world doctor–patient encounter) this transcript belongs to.</summary>
+    /// <summary>Identifier of the Session (the real-world doctor–patient encounter) this transcript belongs to. Required for <c>SessionTranscript</c>.</summary>
     public string? SessionId { get; init; }
 
     /// <summary>
     /// Ordinal of this Transcript within its Session. A new sequence number is a
-    /// Continuation (sibling transcript); reusing an existing one is a Correction (supersedes).
+    /// Continuation (sibling transcript); reusing an existing one is a Correction
+    /// (supersedes). Required for <c>SessionTranscript</c>.
     /// </summary>
     public int? SequenceNumber { get; init; }
 
@@ -34,11 +40,12 @@ public sealed record IngestionRequest
     public string? Language { get; init; }
 
     /// <summary>
-    /// The transcript as free text. Dialog-like, by convention one utterance per line
-    /// ("Doctor: …" / "Patient: …"); the service treats non-empty lines as the atoms
-    /// that chunk boundaries snap to, and never alters the text.
+    /// The transcript as free text. Required, and must hold at least one non-empty
+    /// line. Dialog-like, by convention one utterance per line ("Doctor: …" /
+    /// "Patient: …"); the service treats non-empty lines as the atoms that chunk
+    /// boundaries snap to, and never alters the text.
     /// </summary>
-    public required string Transcript { get; init; }
+    public string Transcript { get; init; } = null!;
 }
 
 /// <summary>The current state of one Ingestion.</summary>

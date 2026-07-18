@@ -24,12 +24,22 @@ public sealed class IngestionsController(IngestionStore store, Channel<Guid> que
     /// <param name="request">The document payload with its declared type, clinical identifiers, and content.</param>
     /// <param name="ct">Cancellation token for the request.</param>
     /// <response code="202">The document was accepted and queued; the body carries the ingestion id.</response>
-    /// <response code="400">The payload is malformed or missing required fields.</response>
+    /// <response code="400">
+    /// The payload is malformed or breaks the submission contract. The body is a
+    /// problem document whose <c>errors</c> map names every offending field at
+    /// once; no ingestion is created, so there is nothing to retry or clean up.
+    /// </response>
     [HttpPost]
     [ProducesResponseType<IngestionAccepted>(StatusCodes.Status202Accepted)]
-    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ValidationProblemDetails>(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> Submit([FromBody] IngestionRequest request, CancellationToken ct)
     {
+        // Validate before anything durable happens: an invalid submission must
+        // leave no trace at all, not a Failed row discovered minutes later.
+        var errors = IngestionRequestValidation.Validate(request);
+        if (errors.Count > 0)
+            return ValidationProblem(new ValidationProblemDetails(errors));
+
         var ingestionId = await store.CreateQueuedAsync(request, ct);
         await queue.Writer.WriteAsync(ingestionId, ct);
         return Accepted($"/ingestions/{ingestionId}", new IngestionAccepted { IngestionId = ingestionId });

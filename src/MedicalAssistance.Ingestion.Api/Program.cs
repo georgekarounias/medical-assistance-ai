@@ -16,7 +16,15 @@ var dataSourceBuilder = new NpgsqlDataSourceBuilder(connectionString);
 dataSourceBuilder.UseVector();
 var dataSource = dataSourceBuilder.Build();
 
-builder.Services.AddControllers();
+builder.Services.AddControllers(options =>
+{
+    // MVC would otherwise infer [Required] from non-nullable properties and
+    // reject the payload itself, with CLR-cased keys. Submission rules live in
+    // IngestionRequestValidation instead, so callers get one error contract —
+    // camelCase field names, every problem reported at once. Malformed JSON is
+    // still rejected by the framework, as it should be.
+    options.SuppressImplicitRequiredAttributeForNonNullableReferenceTypes = true;
+});
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
