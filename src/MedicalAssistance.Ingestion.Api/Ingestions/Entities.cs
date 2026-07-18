@@ -33,6 +33,13 @@ public class IngestionRecord
     /// <summary>Failure reason; set only when <see cref="Status"/> is Failed.</summary>
     public string? ErrorMessage { get; set; }
 
+    /// <summary>
+    /// How many times a worker has picked this ingestion up. Counts crashes as
+    /// well as failures, which is the point: a document that takes the process
+    /// down leaves no error message behind, only this number.
+    /// </summary>
+    public int Attempts { get; set; }
+
     /// <summary>SHA-256 of the canonical payload JSON; used to detect identical re-POSTs.</summary>
     public string ContentHash { get; set; } = null!;
 

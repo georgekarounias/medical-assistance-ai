@@ -118,9 +118,20 @@ public sealed class IngestionStore(IngestionDbContext db)
     /// Returns a Failed Ingestion to the queue for a fresh, complete rerun from
     /// its stored payload — there are no stage checkpoints to resume from
     /// (ADR-0003), so the earlier failure leaves nothing to clean up.
+    ///
+    /// The attempt count starts over. Deciding to submit again is a deliberate
+    /// act, usually taken because whatever broke has been fixed; inheriting a
+    /// spent budget would make a document unrecoverable forever because of an
+    /// outage that is long over.
     /// </summary>
     public Task RequeueAsync(Guid id, CancellationToken ct = default) =>
-        UpdateStatusAsync(id, "Queued", null, ct);
+        db.Ingestions.Where(i => i.Id == id).ExecuteUpdateAsync(
+            setters => setters
+                .SetProperty(i => i.Status, "Queued")
+                .SetProperty(i => i.ErrorMessage, (string?)null)
+                .SetProperty(i => i.Attempts, 0)
+                .SetProperty(i => i.UpdatedAt, DateTimeOffset.UtcNow),
+            ct);
 
     /// <summary>Durably records a submitted Document as a Queued Ingestion (with content hash and raw payload) and returns its id.</summary>
     public async Task<Guid> CreateQueuedAsync(IngestionRequest request, CancellationToken ct = default)
@@ -164,9 +175,37 @@ public sealed class IngestionStore(IngestionDbContext db)
             ?? throw new InvalidOperationException($"Ingestion {id} payload could not be deserialized.");
     }
 
-    /// <summary>Moves an Ingestion to Processing.</summary>
-    public Task MarkProcessingAsync(Guid id, CancellationToken ct = default) =>
-        UpdateStatusAsync(id, "Processing", null, ct);
+    /// <summary>
+    /// Claims an Ingestion for a worker: counts the attempt and moves it to
+    /// Processing, in one statement so two workers cannot both claim it.
+    /// Returns false when its attempts are already spent — the caller then
+    /// gives up on it rather than starting another run.
+    /// </summary>
+    public async Task<bool> TryClaimAsync(Guid id, int maxAttempts, CancellationToken ct = default)
+    {
+        var claimed = await db.Ingestions
+            .Where(i => i.Id == id && i.Attempts < maxAttempts)
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(i => i.Status, "Processing")
+                    .SetProperty(i => i.Attempts, i => i.Attempts + 1)
+                    .SetProperty(i => i.UpdatedAt, DateTimeOffset.UtcNow),
+                ct);
+        return claimed > 0;
+    }
+
+    /// <summary>
+    /// Ids of every Ingestion that was accepted but never reached a terminal
+    /// state — what a crash or a deploy leaves behind. Queued again at startup,
+    /// because an accepted upload is a promise, and a doctor watching a progress
+    /// bar has no way to know the process died.
+    /// </summary>
+    public Task<List<Guid>> FindUnfinishedAsync(CancellationToken ct = default) =>
+        db.Ingestions.AsNoTracking()
+            .Where(i => i.Status == "Queued" || i.Status == "Processing")
+            .OrderBy(i => i.CreatedAt)
+            .Select(i => i.Id)
+            .ToListAsync(ct);
 
     /// <summary>Moves an Ingestion to Failed, recording why — an honest, retriable failure (never silent).</summary>
     public Task MarkFailedAsync(Guid id, string errorMessage, CancellationToken ct = default) =>

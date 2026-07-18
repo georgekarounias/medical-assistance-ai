@@ -87,6 +87,17 @@ await using (var scope = app.Services.CreateAsyncScope())
     await db.SaveChangesAsync();
     app.Services.GetRequiredService<AgentInstructionProvider>()
         .Load(await db.AgentInstructions.AsNoTracking().ToListAsync());
+
+    // Whatever the last process was working on when it stopped is queued again.
+    // A crash or a deploy must not turn an accepted upload into a progress bar
+    // that never moves; the attempt cap is what keeps this from looping.
+    var queue = app.Services.GetRequiredService<Channel<Guid>>();
+    var unfinished = await scope.ServiceProvider.GetRequiredService<IngestionStore>().FindUnfinishedAsync();
+    foreach (var ingestionId in unfinished)
+        await queue.Writer.WriteAsync(ingestionId);
+
+    if (unfinished.Count > 0)
+        app.Logger.LogInformation("Requeued {Count} unfinished ingestions after startup", unfinished.Count);
 }
 
 app.UseSwagger();

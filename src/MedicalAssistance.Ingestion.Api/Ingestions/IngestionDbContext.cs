@@ -38,6 +38,7 @@ public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> opti
             entity.Property(i => i.SequenceNumber).HasColumnName("sequence_number");
             entity.Property(i => i.Status).HasColumnName("status");
             entity.Property(i => i.ErrorMessage).HasColumnName("error_message");
+            entity.Property(i => i.Attempts).HasColumnName("attempts");
             entity.Property(i => i.ContentHash).HasColumnName("content_hash");
             entity.Property(i => i.Payload).HasColumnName("payload").HasColumnType("jsonb");
             entity.Property(i => i.InstructionVersion).HasColumnName("instruction_version");
