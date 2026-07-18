@@ -1,5 +1,6 @@
 using System.Threading.Channels;
 using MedicalAssistance.Ingestion.Api.Ingestions;
+using MedicalAssistance.Ingestion.Api.Realtime;
 using MedicalAssistance.Ingestion.Api.Security;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
@@ -39,6 +40,7 @@ builder.Services.AddControllers(options =>
     options.SuppressImplicitRequiredAttributeForNonNullableReferenceTypes = true;
 });
 builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSignalR();
 builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc("v1", new OpenApiInfo
@@ -150,6 +152,10 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+
+// The hub carries no authorization metadata of its own, so the fallback policy
+// applies: the handshake needs the same secret every other endpoint needs.
+app.MapHub<IngestionStatusHub>("/hubs/ingestion-status");
 
 app.Run();
 
