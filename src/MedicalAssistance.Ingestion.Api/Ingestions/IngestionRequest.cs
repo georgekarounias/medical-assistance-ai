@@ -54,7 +54,12 @@ public sealed record IngestionStatus
     /// <summary>Identifier of the Ingestion, as returned when the document was submitted.</summary>
     public required Guid IngestionId { get; init; }
 
-    /// <summary>Lifecycle state: <c>Queued</c>, <c>Processing</c>, <c>Completed</c> or <c>Failed</c>.</summary>
+    /// <summary>
+    /// Lifecycle state: <c>Queued</c>, <c>Processing</c>, <c>Completed</c>,
+    /// <c>Failed</c>, or <c>Superseded</c> — this ingestion succeeded once, but a
+    /// later correction of the same document replaced its chunks, so it no longer
+    /// describes anything in the store.
+    /// </summary>
     public required string Status { get; init; }
 
     /// <summary>Why the ingestion failed; present only when <see cref="Status"/> is <c>Failed</c>.</summary>

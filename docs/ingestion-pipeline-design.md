@@ -41,7 +41,7 @@ Scanned/handwritten documents (no text layer) are **out of scope** — no OCR pa
 
 - Returns `202` + `ingestionId`. `409` if the same document identity is already Queued/Processing.
 - Identical content hash + prior success → no-op (`duplicate: true`), **whatever identity it arrives under**. The hash covers what the document is — type, patient, doctor, clinical date, language, content — but not `sessionId`/`sequenceNumber`, which are filing rather than content. So the same recording re-uploaded as a new session or a fresh sequence number is skipped instead of duplicating knowledge in the patient's record, while the same text for a *different* patient is ingested normally. Identical content + prior failure → retry of that same ingestion.
-- Same identity + different content → **Correction** (supersedes old chunks/rows transactionally). New `sequenceNumber` on an existing session, with different content → **Continuation**.
+- Same identity + different content → **Correction**: one transaction deletes the previous version's chunks, writes the new ones, and marks the previous ingestion `Superseded`. That status is load-bearing, not cosmetic — a replaced ingestion holds no chunks, so leaving it `Completed` would let dedup answer "already ingested" about deleted text and silently drop a re-upload of the original. New `sequenceNumber` on an existing session, with different content → **Continuation**.
 
 Full surface:
 

@@ -109,7 +109,10 @@ public sealed class IngestionsController(IngestionStore store, Channel<Guid> que
     /// <summary>Returns the current status of one Ingestion.</summary>
     /// <param name="id">The ingestion id returned by the submit call.</param>
     /// <param name="ct">Cancellation token for the request.</param>
-    /// <response code="200">The ingestion exists; the body carries its lifecycle state.</response>
+    /// <response code="200">
+    /// The ingestion exists; the body carries its lifecycle state. <c>Superseded</c>
+    /// means a later correction of the same document replaced this version's chunks.
+    /// </response>
     /// <response code="404">No ingestion with this id exists.</response>
     [HttpGet("{id:guid}")]
     [ProducesResponseType<IngestionStatus>(StatusCodes.Status200OK)]

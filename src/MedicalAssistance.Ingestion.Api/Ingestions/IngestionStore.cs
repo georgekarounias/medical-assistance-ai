@@ -173,15 +173,22 @@ public sealed class IngestionStore(IngestionDbContext db)
         UpdateStatusAsync(id, "Failed", errorMessage, ct);
 
     /// <summary>
-    /// The atomic commit of an Ingestion: all chunks and the Completed status
-    /// land in one SaveChanges — one transaction, so nothing is ever partially
-    /// visible (ADR-0003).
+    /// The atomic commit of an Ingestion: any superseded version of the document
+    /// is removed, all new chunks are written, and the status becomes Completed —
+    /// in one transaction, so nothing is ever partially visible (ADR-0003).
+    ///
+    /// When this is a Correction, retrieval goes straight from the old version to
+    /// the new one: it can never see both versions of a transcript at once, and
+    /// never sees the document missing in between.
     /// </summary>
     public async Task CompleteWithChunksAsync(
         Guid ingestionId, string documentId, IngestionRequest request, IReadOnlyList<ChunkToStore> chunks,
         int instructionVersion, string chatModel, CancellationToken ct = default)
     {
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+
         var ingestion = await db.Ingestions.FirstAsync(i => i.Id == ingestionId, ct);
+        await SupersedePreviousVersionAsync(ingestionId, documentId, request, ct);
 
         db.Chunks.AddRange(chunks.Select(chunk => new Chunk
         {
@@ -207,6 +214,41 @@ public sealed class IngestionStore(IngestionDbContext db)
         ingestion.ChatModel = chatModel;
         ingestion.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
+
+        await transaction.CommitAsync(ct);
+    }
+
+    /// <summary>
+    /// Clears out the version of this Document that is being replaced: its chunks
+    /// are deleted and its Ingestion is marked Superseded.
+    ///
+    /// The status matters as much as the delete. A Correction leaves the earlier
+    /// ingestion with no chunks at all, so leaving it as Completed would let the
+    /// dedup rule answer "already ingested" about text that no longer exists —
+    /// and a re-upload of the original would be silently dropped. Superseded is
+    /// the honest record: this ran, and this is no longer what the store holds.
+    /// </summary>
+    private async Task SupersedePreviousVersionAsync(
+        Guid ingestionId, string documentId, IngestionRequest request, CancellationToken ct)
+    {
+        // Scoped by patient as well as document id: this deletes clinical data,
+        // so it must not depend on session ids being unique across patients.
+        await db.Chunks
+            .Where(c => c.DocumentId == documentId && c.PatientId == request.PatientId)
+            .ExecuteDeleteAsync(ct);
+
+        await db.Ingestions
+            .Where(i => i.Id != ingestionId
+                        && i.Status == "Completed"
+                        && i.DocumentType == request.DocumentType
+                        && i.PatientId == request.PatientId
+                        && i.SessionId == request.SessionId
+                        && i.SequenceNumber == request.SequenceNumber)
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(i => i.Status, "Superseded")
+                    .SetProperty(i => i.UpdatedAt, DateTimeOffset.UtcNow),
+                ct);
     }
 
     /// <summary>
