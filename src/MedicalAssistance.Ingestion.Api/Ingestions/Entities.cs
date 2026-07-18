@@ -39,6 +39,12 @@ public class IngestionRecord
     /// <summary>The submitted document payload, verbatim, as JSON.</summary>
     public string Payload { get; set; } = null!;
 
+    /// <summary>Version of the agent instructions that produced the stored chunks (set on completion).</summary>
+    public int? InstructionVersion { get; set; }
+
+    /// <summary>Chat model that processed the document (set on completion).</summary>
+    public string? ChatModel { get; set; }
+
     /// <summary>When the ingestion was accepted.</summary>
     public DateTimeOffset CreatedAt { get; set; }
 

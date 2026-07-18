@@ -40,6 +40,7 @@ builder.Services.AddDbContext<IngestionDbContext>(options =>
 builder.Services.TryAddSingleton<IChatClient>(new UnconfiguredChatClient());
 builder.Services.TryAddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(new UnconfiguredEmbeddingGenerator());
 
+builder.Services.AddSingleton<AgentInstructionProvider>();
 builder.Services.AddScoped<IngestionStore>();
 builder.Services.AddScoped<TranscriptIngestionStrategy>();
 builder.Services.AddSingleton(Channel.CreateUnbounded<Guid>());
@@ -58,6 +59,26 @@ await using (var scope = app.Services.CreateAsyncScope())
     await connection.OpenAsync();
     await connection.ReloadTypesAsync();
     await connection.CloseAsync();
+
+    // Seed missing agent instructions from code defaults, then load them all
+    // into the singleton provider — read once, restart to apply (ADR-0008).
+    var seededNames = await db.AgentInstructions.Select(a => a.Name).ToListAsync();
+    foreach (var (name, instructions) in AgentInstructionDefaults.Defaults)
+    {
+        if (!seededNames.Contains(name))
+        {
+            db.AgentInstructions.Add(new AgentInstruction
+            {
+                Name = name,
+                Instructions = instructions,
+                Version = 1,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            });
+        }
+    }
+    await db.SaveChangesAsync();
+    app.Services.GetRequiredService<AgentInstructionProvider>()
+        .Load(await db.AgentInstructions.AsNoTracking().ToListAsync());
 }
 
 app.UseSwagger();

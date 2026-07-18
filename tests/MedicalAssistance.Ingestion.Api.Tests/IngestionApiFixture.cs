@@ -25,18 +25,26 @@ public sealed class IngestionApiFixture : IAsyncLifetime
     public async Task InitializeAsync()
     {
         await _postgres.StartAsync();
-        Factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        Factory = CreateFactory(ChatClient);
+        _ = Factory.Server; // WebApplicationFactory is lazy — force startup (schema + seeding) now.
+    }
+
+    /// <summary>
+    /// Boots an additional application instance against the same database —
+    /// used to observe startup-time behavior (seeding, singleton loading).
+    /// </summary>
+    public WebApplicationFactory<Program> CreateFactory(ScriptedChatClient chatClient) =>
+        new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseSetting("ConnectionStrings:Postgres", ConnectionString);
             builder.UseSetting("Embeddings:Dimensions", EmbeddingDimensions.ToString());
             builder.ConfigureServices(services =>
             {
-                services.AddSingleton<IChatClient>(ChatClient);
+                services.AddSingleton<IChatClient>(chatClient);
                 services.AddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(
                     new DeterministicEmbeddingGenerator(EmbeddingDimensions));
             });
         });
-    }
 
     public async Task DisposeAsync()
     {

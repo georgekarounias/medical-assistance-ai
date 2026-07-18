@@ -17,6 +17,9 @@ public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> opti
     /// <summary>The vector store: verbatim chunks with embeddings and the metadata spine.</summary>
     public DbSet<Chunk> Chunks => Set<Chunk>();
 
+    /// <summary>Per-agent system instructions, seeded from code defaults (ADR-0008).</summary>
+    public DbSet<AgentInstruction> AgentInstructions => Set<AgentInstruction>();
+
     /// <inheritdoc />
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -37,8 +40,20 @@ public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> opti
             entity.Property(i => i.ErrorMessage).HasColumnName("error_message");
             entity.Property(i => i.ContentHash).HasColumnName("content_hash");
             entity.Property(i => i.Payload).HasColumnName("payload").HasColumnType("jsonb");
+            entity.Property(i => i.InstructionVersion).HasColumnName("instruction_version");
+            entity.Property(i => i.ChatModel).HasColumnName("chat_model");
             entity.Property(i => i.CreatedAt).HasColumnName("created_at");
             entity.Property(i => i.UpdatedAt).HasColumnName("updated_at");
+        });
+
+        modelBuilder.Entity<AgentInstruction>(entity =>
+        {
+            entity.ToTable("agent_instructions");
+            entity.HasKey(a => a.Name);
+            entity.Property(a => a.Name).HasColumnName("name");
+            entity.Property(a => a.Instructions).HasColumnName("instructions");
+            entity.Property(a => a.Version).HasColumnName("version");
+            entity.Property(a => a.UpdatedAt).HasColumnName("updated_at");
         });
 
         modelBuilder.Entity<Chunk>(entity =>

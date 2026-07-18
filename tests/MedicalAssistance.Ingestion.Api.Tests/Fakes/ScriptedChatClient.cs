@@ -18,7 +18,12 @@ public sealed class ScriptedChatClient : IChatClient
     public Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
     {
-        ReceivedPrompts.Add(string.Join("\n", messages.Select(m => m.Text)));
+        // Agent instructions may arrive as ChatOptions.Instructions (how
+        // ChatClientAgent sends them) or as a system message — record both.
+        ReceivedPrompts.Add(string.Join("\n",
+            new[] { options?.Instructions }
+                .Concat(messages.Select(m => m.Text))
+                .Where(s => !string.IsNullOrEmpty(s))));
         if (!_responses.TryDequeue(out var next))
             throw new InvalidOperationException("ScriptedChatClient has no scripted response left to return.");
         return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, next)));
@@ -28,7 +33,10 @@ public sealed class ScriptedChatClient : IChatClient
         IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
         => throw new NotSupportedException("Streaming is not used by the ingestion pipeline.");
 
-    public object? GetService(Type serviceType, object? serviceKey = null) => null;
+    public object? GetService(Type serviceType, object? serviceKey = null) =>
+        serviceType == typeof(ChatClientMetadata)
+            ? new ChatClientMetadata("scripted", defaultModelId: "scripted-model")
+            : null;
 
     public void Dispose()
     {

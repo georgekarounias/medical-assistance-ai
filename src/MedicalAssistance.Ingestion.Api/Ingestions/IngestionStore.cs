@@ -86,7 +86,8 @@ public sealed class IngestionStore(IngestionDbContext db)
     /// visible (ADR-0003).
     /// </summary>
     public async Task CompleteWithChunksAsync(
-        Guid ingestionId, string documentId, IngestionRequest request, IReadOnlyList<ChunkToStore> chunks, CancellationToken ct = default)
+        Guid ingestionId, string documentId, IngestionRequest request, IReadOnlyList<ChunkToStore> chunks,
+        int instructionVersion, string chatModel, CancellationToken ct = default)
     {
         var ingestion = await db.Ingestions.FirstAsync(i => i.Id == ingestionId, ct);
 
@@ -110,6 +111,8 @@ public sealed class IngestionStore(IngestionDbContext db)
         }));
 
         ingestion.Status = "Completed";
+        ingestion.InstructionVersion = instructionVersion;
+        ingestion.ChatModel = chatModel;
         ingestion.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
     }

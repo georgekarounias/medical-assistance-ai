@@ -17,23 +17,25 @@ public sealed class TranscriptIngestionStrategy
     private static readonly JsonSerializerOptions PlanJson = new(JsonSerializerDefaults.Web);
 
     private readonly AIAgent _chunkingAgent;
+    private readonly int _instructionVersion;
+    private readonly string _chatModel;
     private readonly IEmbeddingGenerator<string, Embedding<float>> _embeddingGenerator;
     private readonly IngestionStore _store;
 
     public TranscriptIngestionStrategy(
         IChatClient chatClient,
         IEmbeddingGenerator<string, Embedding<float>> embeddingGenerator,
-        IngestionStore store)
+        IngestionStore store,
+        AgentInstructionProvider instructionProvider)
     {
         // A Microsoft Agent Framework agent wrapping whatever IChatClient is
         // configured — Azure OpenAI in production, a scripted fake in tests.
-        _chunkingAgent = chatClient.AsAIAgent(
-            name: "TranscriptChunker",
-            instructions:
-                "You segment doctor-patient session transcripts into topically coherent chunks. " +
-                "You only return line boundaries and descriptions — never transcript text. " +
-                "Respond with JSON only: {\"chunks\":[{\"startLine\":int,\"endLine\":int,\"contextBlurb\":string}],\"summary\":string}. " +
-                "Boundaries are inclusive, contiguous, non-overlapping, and must cover every line.");
+        // Instructions come from the database via the startup-loaded singleton
+        // (ADR-0008); their version is stamped onto every completed ingestion.
+        var (instructions, version) = instructionProvider.Get(AgentInstructionDefaults.TranscriptChunker);
+        _chunkingAgent = chatClient.AsAIAgent(name: AgentInstructionDefaults.TranscriptChunker, instructions: instructions);
+        _instructionVersion = version;
+        _chatModel = (chatClient.GetService(typeof(ChatClientMetadata)) as ChatClientMetadata)?.DefaultModelId ?? "unknown";
         _embeddingGenerator = embeddingGenerator;
         _store = store;
     }
@@ -53,7 +55,7 @@ public sealed class TranscriptIngestionStrategy
             .ToList();
 
         var documentId = $"{request.SessionId}#{request.SequenceNumber}";
-        await _store.CompleteWithChunksAsync(ingestionId, documentId, request, records, ct);
+        await _store.CompleteWithChunksAsync(ingestionId, documentId, request, records, _instructionVersion, _chatModel, ct);
     }
 
     private static IReadOnlyList<string> SplitIntoLines(string transcript) =>
