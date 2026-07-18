@@ -27,7 +27,13 @@ public class IngestionRecord
     /// <summary>Transcript ordinal within its Session (transcripts only).</summary>
     public int? SequenceNumber { get; set; }
 
-    /// <summary>Lifecycle state: Queued, Processing, Completed or Failed.</summary>
+    /// <summary>
+    /// Clinical date of the document (the session date), copied from the payload
+    /// so the patient document list can be answered without opening it.
+    /// </summary>
+    public DateTimeOffset? DocumentDate { get; set; }
+
+    /// <summary>Lifecycle state: Queued, Processing, Completed, Failed or Superseded.</summary>
     public string Status { get; set; } = null!;
 
     /// <summary>Failure reason; set only when <see cref="Status"/> is Failed.</summary>

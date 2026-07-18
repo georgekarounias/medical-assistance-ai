@@ -72,7 +72,7 @@ public sealed class TranscriptIngestionStrategy
             .ToList();
 
         await PublishStageAsync(ingestionId, request, IngestionStages.Storing, ct);
-        var documentId = $"{request.SessionId}#{request.SequenceNumber}";
+        var documentId = DocumentIdentity.For(request.DocumentType, request.SessionId, request.SequenceNumber);
         await _store.CompleteWithChunksAsync(ingestionId, documentId, request, records, _instructionVersion, _chatModel, ct);
 
         // Announced only after the commit: the doctor is told the document is

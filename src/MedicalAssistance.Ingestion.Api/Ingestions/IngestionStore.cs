@@ -175,6 +175,7 @@ public sealed class IngestionStore(IngestionDbContext db)
             PatientId = request.PatientId,
             SessionId = request.SessionId,
             SequenceNumber = request.SequenceNumber,
+            DocumentDate = request.SessionDate,
             Status = "Queued",
             ContentHash = contentHash,
             Payload = payload,
@@ -226,6 +227,45 @@ public sealed class IngestionStore(IngestionDbContext db)
                 UpdatedAt = i.UpdatedAt,
             })
             .ToListAsync(ct);
+    }
+
+    /// <summary>
+    /// Every Document the service holds for a patient, one row each, in the state
+    /// its most recent Ingestion left it. Superseded versions and earlier failed
+    /// attempts collapse into the document they belong to — a doctor counting
+    /// rows here is counting transcripts, not uploads.
+    /// </summary>
+    public async Task<List<PatientDocument>> ListPatientDocumentsAsync(
+        string patientId, CancellationToken ct = default)
+    {
+        var ingestions = await db.Ingestions.AsNoTracking()
+            .Where(i => i.PatientId == patientId)
+            .OrderByDescending(i => i.UpdatedAt)
+            .Select(i => new
+            {
+                i.Id, i.DocumentType, i.SessionId, i.SequenceNumber,
+                i.DocumentDate, i.Status, i.ErrorMessage, i.UpdatedAt,
+            })
+            .ToListAsync(ct);
+
+        // Bounded by one patient's care history, so collapsing to the latest per
+        // document runs here rather than as a window function nobody can read.
+        return ingestions
+            .DistinctBy(i => (i.DocumentType, i.SessionId, i.SequenceNumber))
+            .Select(i => new PatientDocument
+            {
+                DocumentId = DocumentIdentity.For(i.DocumentType, i.SessionId, i.SequenceNumber),
+                DocumentType = i.DocumentType,
+                SessionId = i.SessionId,
+                SequenceNumber = i.SequenceNumber,
+                DocumentDate = i.DocumentDate,
+                Status = i.Status,
+                ErrorMessage = i.ErrorMessage,
+                IngestionId = i.Id,
+                UpdatedAt = i.UpdatedAt,
+            })
+            .OrderByDescending(document => document.DocumentDate ?? document.UpdatedAt)
+            .ToList();
     }
 
     /// <summary>Reloads the original submitted payload of an Ingestion — the input for processing and rerun-from-scratch.</summary>

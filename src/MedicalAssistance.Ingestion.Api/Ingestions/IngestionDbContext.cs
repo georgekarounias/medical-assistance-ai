@@ -36,6 +36,7 @@ public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> opti
             entity.Property(i => i.PatientId).HasColumnName("patient_id");
             entity.Property(i => i.SessionId).HasColumnName("session_id");
             entity.Property(i => i.SequenceNumber).HasColumnName("sequence_number");
+            entity.Property(i => i.DocumentDate).HasColumnName("document_date");
             entity.Property(i => i.Status).HasColumnName("status");
             entity.Property(i => i.ErrorMessage).HasColumnName("error_message");
             entity.Property(i => i.Attempts).HasColumnName("attempts");
@@ -56,6 +57,10 @@ public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> opti
             // The resync query: one doctor's unfinished work, asked on every
             // reconnect, against a table that only ever grows.
             entity.HasIndex(i => new { i.DoctorId, i.Status });
+
+            // The patient document list, and every patient-scoped operation
+            // that follows it.
+            entity.HasIndex(i => i.PatientId);
         });
 
         modelBuilder.Entity<AgentInstruction>(entity =>
