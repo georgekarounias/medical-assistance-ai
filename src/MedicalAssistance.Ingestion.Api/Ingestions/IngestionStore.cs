@@ -65,6 +65,19 @@ public enum RetryOutcome
     Overtaken,
 }
 
+/// <summary>What came of asking to un-ingest a Document.</summary>
+public enum UnIngestOutcome
+{
+    /// <summary>The live version's chunks and payload were removed and its Ingestion is now a Deleted tombstone.</summary>
+    Deleted,
+
+    /// <summary>No live version of this Document exists to remove — the id is unknown, or it was already un-ingested.</summary>
+    NotFound,
+
+    /// <summary>A version of this Document is still Queued or Processing; it cannot be removed until that run settles.</summary>
+    InFlight,
+}
+
 /// <summary>What came of a worker trying to take an Ingestion off the queue.</summary>
 public enum ClaimOutcome
 {
@@ -253,6 +266,8 @@ public sealed class IngestionStore(IngestionDbContext db)
         var record = new IngestionRecord
         {
             Id = Guid.NewGuid(),
+            DocumentId = DocumentIdentity.For(
+                request.DocumentType, request.DoctorId, request.PatientId, request.SessionId, request.SequenceNumber),
             DocumentType = request.DocumentType,
             DoctorId = request.DoctorId,
             PatientId = request.PatientId,
@@ -343,6 +358,10 @@ public sealed class IngestionStore(IngestionDbContext db)
     /// attempts collapse into the document they belong to — a doctor counting
     /// rows here is counting transcripts, not uploads.
     ///
+    /// A Document whose current state is Deleted is left out: un-ingest removes it
+    /// from the record, and a doctor should not still see a document that has been
+    /// taken out. Its tombstone remains for audit, but audit is not this view.
+    ///
     /// <paramref name="doctorId" /> narrows the list to one doctor's documents.
     /// It is a filter and not a permission check: this service does not decide
     /// who may see what, the backend does (ADR-0007). Left null, the answer is
@@ -373,6 +392,11 @@ public sealed class IngestionStore(IngestionDbContext db)
         // was touched last.
         return ingestions
             .DistinctBy(i => (i.DocumentType, i.DoctorId, i.SessionId, i.SequenceNumber))
+            // After the collapse, so it is the document's current state that is
+            // judged: a slot whose latest version is a Deleted tombstone drops
+            // out entirely rather than falling back to an older, still-live-looking
+            // row beneath it.
+            .Where(i => i.Status != "Deleted")
             .Select(i => new PatientDocument
             {
                 DocumentId = DocumentIdentity.For(
@@ -469,6 +493,70 @@ public sealed class IngestionStore(IngestionDbContext db)
     /// <summary>Moves an Ingestion to Failed, recording why — an honest, retriable failure (never silent).</summary>
     public Task MarkFailedAsync(Guid id, string errorMessage, CancellationToken ct = default) =>
         UpdateStatusAsync(id, "Failed", errorMessage, ct);
+
+    /// <summary>
+    /// Un-ingests a Document: in one transaction its chunks are deleted, its raw
+    /// payload is scrubbed, and its live Ingestion becomes a Deleted tombstone
+    /// naming who removed it and when. The canonical case is a wrong-patient
+    /// upload, so removal has to be complete — nothing of the clinical content
+    /// left behind — while the tombstone keeps the removal accountable.
+    ///
+    /// A Document mid-ingest is <see cref="UnIngestOutcome.InFlight"/>: its chunk
+    /// set is not settled and a worker is writing it, so the run has to reach a
+    /// terminal state before it can be removed. A Document with no live version —
+    /// an unknown id, or one already un-ingested — is
+    /// <see cref="UnIngestOutcome.NotFound"/>.
+    ///
+    /// The tombstone deliberately survives: a document that simply vanished would
+    /// be worse than the mistake un-ingest exists to correct. Erasing even the
+    /// tombstone is GDPR Erasure's job, guarded by its own admin secret.
+    /// </summary>
+    public async Task<(UnIngestOutcome Outcome, DateTimeOffset? DeletedAt)> TryUnIngestAsync(
+        string documentId, string removedBy, CancellationToken ct = default)
+    {
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+
+        // In-flight is checked first and across every row for the document: a
+        // correction can be Queued while the previous version is still Completed,
+        // and removing one out from under the other mid-run is the race this
+        // avoids.
+        var inFlight = await db.Ingestions
+            .Where(i => i.DocumentId == documentId && (i.Status == "Queued" || i.Status == "Processing"))
+            .AnyAsync(ct);
+        if (inFlight)
+        {
+            await transaction.RollbackAsync(ct);
+            return (UnIngestOutcome.InFlight, null);
+        }
+
+        // Guarded on Completed, so two deletes racing settle to one, and a
+        // document with no live version is left untouched rather than tombstoned
+        // twice. There is at most one Completed row per document — supersede
+        // demotes the old one as the new one lands — so this flips exactly it.
+        var deletedAt = DateTimeOffset.UtcNow;
+        var tombstoned = await db.Ingestions
+            .Where(i => i.DocumentId == documentId && i.Status == "Completed")
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(i => i.Status, "Deleted")
+                    .SetProperty(i => i.DeletedBy, removedBy)
+                    .SetProperty(i => i.DeletedAt, deletedAt)
+                    .SetProperty(i => i.Payload, (string?)null)
+                    .SetProperty(i => i.UpdatedAt, deletedAt),
+                ct);
+        if (tombstoned == 0)
+        {
+            await transaction.RollbackAsync(ct);
+            return (UnIngestOutcome.NotFound, null);
+        }
+
+        // The chunks carry the same assembled id, so this removes exactly the
+        // live version's chunks and no sibling's.
+        await db.Chunks.Where(c => c.DocumentId == documentId).ExecuteDeleteAsync(ct);
+
+        await transaction.CommitAsync(ct);
+        return (UnIngestOutcome.Deleted, deletedAt);
+    }
 
     /// <summary>
     /// The atomic commit of an Ingestion: any superseded version of the document

@@ -136,3 +136,16 @@ public sealed record IngestionAccepted
     /// </summary>
     public bool Duplicate { get; init; }
 }
+
+/// <summary>Confirmation that a Document was un-ingested, and the tombstone it left.</summary>
+public sealed record DocumentUnIngested
+{
+    /// <summary>The Document that was removed.</summary>
+    public required string DocumentId { get; init; }
+
+    /// <summary>Who removed it — echoed back from the request, and recorded on the tombstone.</summary>
+    public required string RemovedBy { get; init; }
+
+    /// <summary>When it was removed, in UTC.</summary>
+    public required DateTimeOffset DeletedAt { get; init; }
+}

@@ -41,6 +41,7 @@ public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> opti
             entity.ToTable("ingestions");
             entity.HasKey(i => i.Id);
             entity.Property(i => i.Id).HasColumnName("id");
+            entity.Property(i => i.DocumentId).HasColumnName("document_id");
             entity.Property(i => i.DocumentType).HasColumnName("document_type");
             entity.Property(i => i.DoctorId).HasColumnName("doctor_id");
             entity.Property(i => i.PatientId).HasColumnName("patient_id");
@@ -49,6 +50,8 @@ public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> opti
             entity.Property(i => i.DocumentDate).HasColumnName("document_date");
             entity.Property(i => i.Status).HasColumnName("status");
             entity.Property(i => i.ErrorMessage).HasColumnName("error_message");
+            entity.Property(i => i.DeletedBy).HasColumnName("deleted_by");
+            entity.Property(i => i.DeletedAt).HasColumnName("deleted_at");
             entity.Property(i => i.Attempts).HasColumnName("attempts");
             entity.Property(i => i.ContentHash).HasColumnName("content_hash");
             entity.Property(i => i.Payload).HasColumnName("payload").HasColumnType("jsonb");
@@ -71,6 +74,11 @@ public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> opti
             // The patient document list, and every patient-scoped operation
             // that follows it.
             entity.HasIndex(i => i.PatientId);
+
+            // Un-ingest addresses an ingestion by its assembled document id, and
+            // supersede/duplicate detection could match on it too — a document's
+            // rows should be findable without a scan.
+            entity.HasIndex(i => i.DocumentId);
         });
 
         modelBuilder.Entity<AgentInstruction>(entity =>
@@ -105,6 +113,9 @@ public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> opti
                 .HasColumnType($"vector({EmbeddingDimensions})");
             entity.HasOne<IngestionRecord>().WithMany().HasForeignKey(c => c.IngestionId);
             entity.HasIndex(c => c.IngestionId);
+
+            // Both supersede and un-ingest delete a document's chunks by this id.
+            entity.HasIndex(c => c.DocumentId);
         });
     }
 }

@@ -12,6 +12,16 @@ public class IngestionRecord
     /// <summary>Primary key; returned to the caller as the ingestion id.</summary>
     public Guid Id { get; set; }
 
+    /// <summary>
+    /// The Document this Ingestion is of, assembled once from its parts by
+    /// <see cref="DocumentIdentity.For" /> and stored so it can be matched
+    /// exactly. Un-ingest addresses a document by this string alone, and joining
+    /// the parts back together on demand would depend on them being separable —
+    /// which the '#' join does not guarantee. Stored, it is compared, never
+    /// parsed.
+    /// </summary>
+    public string DocumentId { get; set; } = null!;
+
     /// <summary>The declared Document Type of the submitted payload.</summary>
     public string DocumentType { get; set; } = null!;
 
@@ -33,11 +43,23 @@ public class IngestionRecord
     /// </summary>
     public DateTimeOffset? DocumentDate { get; set; }
 
-    /// <summary>Lifecycle state: Queued, Processing, Completed, Failed or Superseded.</summary>
+    /// <summary>Lifecycle state: Queued, Processing, Completed, Failed, Superseded or Deleted.</summary>
     public string Status { get; set; } = null!;
 
     /// <summary>Failure reason; set only when <see cref="Status"/> is Failed.</summary>
     public string? ErrorMessage { get; set; }
+
+    /// <summary>
+    /// Who un-ingested this Document, and when. Set together, only on the move to
+    /// Deleted: a removal has to be accountable (PRD story 21), and this service
+    /// has no user identity of its own — the acting user is named by the trusted
+    /// backend on the delete request. Null on every ingestion that has not been
+    /// un-ingested.
+    /// </summary>
+    public string? DeletedBy { get; set; }
+
+    /// <inheritdoc cref="DeletedBy" />
+    public DateTimeOffset? DeletedAt { get; set; }
 
     /// <summary>
     /// How many times a worker has picked this ingestion up. Counts crashes as
@@ -49,8 +71,13 @@ public class IngestionRecord
     /// <summary>SHA-256 of the canonical payload JSON; used to detect identical re-POSTs.</summary>
     public string ContentHash { get; set; } = null!;
 
-    /// <summary>The submitted document payload, verbatim, as JSON.</summary>
-    public string Payload { get; set; } = null!;
+    /// <summary>
+    /// The submitted document payload, verbatim, as JSON — the input for retry
+    /// and rerun-from-scratch. Null once the Document has been un-ingested: the
+    /// raw transcript is patient content and is removed with the chunks, leaving
+    /// the tombstone the fact of the document without its text.
+    /// </summary>
+    public string? Payload { get; set; }
 
     /// <summary>Version of the agent instructions that produced the stored chunks (set on completion).</summary>
     public int? InstructionVersion { get; set; }
