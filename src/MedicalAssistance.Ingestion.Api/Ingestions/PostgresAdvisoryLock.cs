@@ -71,6 +71,45 @@ public sealed class PostgresAdvisoryLock : IAsyncDisposable
     }
 
     /// <summary>
+    /// Every two-key lock currently held anywhere against this database — which
+    /// ingestions the fleet is working on, seen from any instance. Postgres
+    /// keeps advisory locks per database, so the filter on
+    /// <c>current_database()</c> is what stops a neighbouring database's locks
+    /// reading as ours.
+    ///
+    /// The single-key space is deliberately excluded: that is the migration
+    /// lock, which is nobody's ingestion.
+    /// </summary>
+    public static async Task<HashSet<(int High, int Low)>> HeldKeysAsync(
+        NpgsqlConnection connection, CancellationToken ct = default)
+    {
+        await using var command = new NpgsqlCommand(
+            """
+            SELECT classid::bigint, objid::bigint
+            FROM pg_locks
+            WHERE locktype = 'advisory'
+              AND objsubid = 2
+              AND granted
+              AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+            """,
+            connection);
+
+        var held = new HashSet<(int High, int Low)>();
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            // Postgres reports both halves as oid, an unsigned 32-bit type, so
+            // they come back through bigint to survive keys whose signed form is
+            // negative.
+            held.Add((
+                unchecked((int)(uint)reader.GetInt64(0)),
+                unchecked((int)(uint)reader.GetInt64(1))));
+        }
+
+        return held;
+    }
+
+    /// <summary>
     /// Folds an id into the two-key space, losslessly enough that two different
     /// ingestions colliding is not a practical concern — which matters, because
     /// a collision would look exactly like "someone else is running this" and the

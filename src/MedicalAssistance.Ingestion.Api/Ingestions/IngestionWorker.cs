@@ -16,9 +16,11 @@ namespace MedicalAssistance.Ingestion.Api.Ingestions;
 /// to the next startup, forever.
 ///
 /// The queue is per-instance and in-memory, but the work it names is shared:
-/// every instance's startup recovery sees every unfinished row, so a rolling
+/// every instance's recovery sweep sees every unfinished row, so a rolling
 /// deploy hands the same ingestion to more than one of them. An advisory lock
-/// held for the length of the run is what makes all but one put it back down.
+/// held for the length of the run is what makes all but one put it back down,
+/// and the claim itself refuses anything already finished — the lock settles who
+/// runs an ingestion now, not whether it still needs running at all.
 /// </summary>
 public sealed class IngestionWorker(
     Channel<Guid> queue,
@@ -58,8 +60,9 @@ public sealed class IngestionWorker(
                 {
                     // Another instance has it. Not an error, and not something to
                     // retry: that instance will carry it to a terminal state, and
-                    // if it dies first the row is left unfinished for a later
-                    // startup to find.
+                    // if it dies first its lock dies with it and the next
+                    // recovery sweep — this instance's included — finds the row
+                    // unfinished and unowned.
                     logger.LogDebug(
                         "Ingestion {IngestionId} is already being run by another instance", ingestionId);
                     continue;
@@ -71,15 +74,28 @@ public sealed class IngestionWorker(
                 // Counting the attempt before doing the work is what makes the
                 // cap hold for crashes: a run that takes the process down never
                 // gets to report anything afterwards.
-                if (!await store.TryClaimAsync(ingestionId, maxAttempts, ct))
+                switch (await store.TryClaimAsync(ingestionId, maxAttempts, ct))
                 {
-                    logger.LogError(
-                        "Ingestion {IngestionId} gave up after {MaxAttempts} attempts", ingestionId, maxAttempts);
-                    await FailAsync(
-                        ingestionId,
-                        $"Gave up after {maxAttempts} attempts without completing. " +
-                        "Resubmit the document to try again with a fresh set of attempts.");
-                    continue;
+                    case ClaimOutcome.AttemptsExhausted:
+                        logger.LogError(
+                            "Ingestion {IngestionId} gave up after {MaxAttempts} attempts",
+                            ingestionId, maxAttempts);
+                        await FailAsync(
+                            ingestionId,
+                            $"Gave up after {maxAttempts} attempts without completing. " +
+                            "Resubmit the document to try again with a fresh set of attempts.");
+                        continue;
+
+                    case ClaimOutcome.NotClaimable:
+                        // It finished while this entry waited its turn. Recovery
+                        // queues the same id on more than one instance on
+                        // purpose, so a queue entry outliving its work is
+                        // ordinary — and running it again would re-embed a
+                        // stored document and supersede any correction made to
+                        // it since.
+                        logger.LogDebug(
+                            "Ingestion {IngestionId} has already finished; nothing left to run", ingestionId);
+                        continue;
                 }
 
                 var request = await store.LoadRequestAsync(ingestionId, ct);

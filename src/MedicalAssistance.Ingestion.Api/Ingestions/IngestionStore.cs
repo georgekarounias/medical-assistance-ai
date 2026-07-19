@@ -65,6 +65,25 @@ public enum RetryOutcome
     Overtaken,
 }
 
+/// <summary>What came of a worker trying to take an Ingestion off the queue.</summary>
+public enum ClaimOutcome
+{
+    /// <summary>The attempt is counted and the Ingestion is now Processing.</summary>
+    Claimed,
+
+    /// <summary>
+    /// It is no longer unfinished, so there is nothing here to run: some other
+    /// run carried it to a terminal state while this queue entry waited its turn.
+    /// </summary>
+    NotClaimable,
+
+    /// <summary>
+    /// It is still unfinished but has used up its attempts, and must be failed
+    /// rather than started again.
+    /// </summary>
+    AttemptsExhausted,
+}
+
 /// <summary>
 /// An existing Ingestion of the same Document identity carrying byte-for-byte
 /// identical content — the input to the dedup decision. Lifecycle strings stay
@@ -386,27 +405,59 @@ public sealed class IngestionStore(IngestionDbContext db)
     /// <summary>
     /// Claims an Ingestion for a worker: counts the attempt and moves it to
     /// Processing, in one statement so two workers cannot both claim it.
-    /// Returns false when its attempts are already spent — the caller then
-    /// gives up on it rather than starting another run.
+    ///
+    /// Only an unfinished Ingestion can be claimed — the same Queued-or-Processing
+    /// condition <see cref="FindUnfinishedAsync"/> selects on, because what is
+    /// recoverable and what is runnable are the same thing. A queue entry can
+    /// outlive the run it named: recovery hands one id to more than one instance
+    /// by design, and the advisory lock only stops them running it at the same
+    /// time, not one of them arriving after the other has finished. Without the
+    /// status in the condition, that late arrival re-runs a Completed Ingestion
+    /// and its commit supersedes whatever correction landed in the meantime.
+    ///
+    /// The two refusals are kept apart deliberately: attempts spent is a
+    /// document that has to be failed, while no longer claimable is work that
+    /// is simply not this worker's any more. Reporting the second as the first
+    /// would mark a finished ingestion Failed.
     /// </summary>
-    public async Task<bool> TryClaimAsync(Guid id, int maxAttempts, CancellationToken ct = default)
+    public async Task<ClaimOutcome> TryClaimAsync(Guid id, int maxAttempts, CancellationToken ct = default)
     {
         var claimed = await db.Ingestions
-            .Where(i => i.Id == id && i.Attempts < maxAttempts)
+            .Where(i => i.Id == id
+                        && (i.Status == "Queued" || i.Status == "Processing")
+                        && i.Attempts < maxAttempts)
             .ExecuteUpdateAsync(
                 setters => setters
                     .SetProperty(i => i.Status, "Processing")
                     .SetProperty(i => i.Attempts, i => i.Attempts + 1)
                     .SetProperty(i => i.UpdatedAt, DateTimeOffset.UtcNow),
                 ct);
-        return claimed > 0;
+
+        if (claimed > 0)
+            return ClaimOutcome.Claimed;
+
+        // Not claimed, so exactly one of the two conditions failed. Reading the
+        // status back says which — and an id with no row at all is nobody's work.
+        var status = await db.Ingestions.AsNoTracking()
+            .Where(i => i.Id == id)
+            .Select(i => i.Status)
+            .FirstOrDefaultAsync(ct);
+
+        return status is "Queued" or "Processing"
+            ? ClaimOutcome.AttemptsExhausted
+            : ClaimOutcome.NotClaimable;
     }
 
     /// <summary>
     /// Ids of every Ingestion that was accepted but never reached a terminal
-    /// state — what a crash or a deploy leaves behind. Queued again at startup,
-    /// because an accepted upload is a promise, and a doctor watching a progress
-    /// bar has no way to know the process died.
+    /// state — what a crash or a deploy leaves behind. Swept up and queued
+    /// again, because an accepted upload is a promise, and a doctor watching a
+    /// progress bar has no way to know the process died.
+    ///
+    /// This is every unfinished Ingestion, including the ones another instance
+    /// is running right now. Which of them are actually abandoned is a question
+    /// about who holds their advisory locks, and it is
+    /// <see cref="IngestionRecoverySweep" /> that asks it.
     /// </summary>
     public Task<List<Guid>> FindUnfinishedAsync(CancellationToken ct = default) =>
         db.Ingestions.AsNoTracking()

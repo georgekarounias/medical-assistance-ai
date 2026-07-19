@@ -60,11 +60,20 @@ public sealed class IngestionApiFixture : IAsyncLifetime
     /// with <paramref name="workerCount"/> set to zero, to park submissions in
     /// Queued for as long as a test needs them there.
     /// </summary>
-    public WebApplicationFactory<Program> CreateFactory(ScriptedChatClient chatClient, int workerCount = 4) =>
+    /// <param name="sweepInterval">
+    /// How often this instance re-scans for orphaned work. Left unset, the
+    /// production default applies — far longer than any test runs, so an
+    /// instance a test is using for something else never sweeps up work another
+    /// test parked. A test about recovery sets its own.
+    /// </param>
+    public WebApplicationFactory<Program> CreateFactory(
+        ScriptedChatClient chatClient, int workerCount = 4, TimeSpan? sweepInterval = null) =>
         new AuthenticatedFactory().WithWebHostBuilder(builder =>
         {
             builder.UseSetting("ConnectionStrings:Postgres", ConnectionString);
             builder.UseSetting("Ingestion:WorkerCount", workerCount.ToString());
+            if (sweepInterval is { } interval)
+                builder.UseSetting("Ingestion:RecoverySweepInterval", interval.ToString());
             builder.UseSetting("Chunking:MinTokens", MinChunkTokens.ToString());
             builder.UseSetting("Chunking:MaxTokens", MaxChunkTokens.ToString());
             builder.UseSetting("Authentication:ApiKeys:0", ApiKey);

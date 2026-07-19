@@ -28,8 +28,8 @@ if (builder.Configuration.GetSection(ApiKeyAuthentication.KeysConfigurationPath)
 }
 // Each worker can hold two connections at once: the one carrying its advisory
 // lock for the whole run, and one for the database work inside it. Workers are
-// capped at half the pool so submissions and status polls — which need
-// connections of their own — can never be starved by ingestion.
+// capped at half the pool so submissions, status polls and the recovery sweep —
+// which need connections of their own — can never be starved by ingestion.
 //
 // Checked here rather than discovered under load: raising WorkerCount is the
 // obvious thing to try when ingestion looks slow, and the failure it causes is
@@ -118,6 +118,7 @@ builder.Services.AddScoped<IngestionQueue>();
 builder.Services.AddScoped<TranscriptIngestionStrategy>();
 builder.Services.AddSingleton(Channel.CreateUnbounded<Guid>());
 builder.Services.AddHostedService<IngestionWorker>();
+builder.Services.AddHostedService<IngestionRecoverySweep>();
 
 var app = builder.Build();
 
@@ -162,18 +163,11 @@ await using (var scope = app.Services.CreateAsyncScope())
     await db.SaveChangesAsync();
     app.Services.GetRequiredService<AgentInstructionProvider>()
         .Load(await db.AgentInstructions.AsNoTracking().ToListAsync());
-
-    // Whatever the last process was working on when it stopped is queued again.
-    // A crash or a deploy must not turn an accepted upload into a progress bar
-    // that never moves; the attempt cap is what keeps this from looping.
-    var queue = scope.ServiceProvider.GetRequiredService<IngestionQueue>();
-    var unfinished = await scope.ServiceProvider.GetRequiredService<IngestionStore>().FindUnfinishedAsync();
-    foreach (var ingestionId in unfinished)
-        await queue.EnqueueAsync(ingestionId);
-
-    if (unfinished.Count > 0)
-        app.Logger.LogInformation("Requeued {Count} unfinished ingestions after startup", unfinished.Count);
 }
+
+// Whatever the last process abandoned is picked up by IngestionRecoverySweep,
+// whose first pass runs as this host starts. Recovery is not a startup step:
+// the instance that abandons work is not always the instance that has to notice.
 
 app.UseSwagger();
 app.UseSwaggerUI(options =>

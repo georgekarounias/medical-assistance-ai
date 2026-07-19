@@ -1,17 +1,21 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text.Json;
+using MedicalAssistance.Ingestion.Api.Ingestions;
 using MedicalAssistance.Ingestion.Api.Tests.Fakes;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 
 namespace MedicalAssistance.Ingestion.Api.Tests;
 
 /// <summary>
 /// What happens when the service dies mid-flight. An accepted upload is a
-/// promise: a deploy or a crash must never quietly abandon it, so every startup
-/// picks up whatever was left unfinished. The counterpart is an attempt cap —
-/// a document that kills the process must not be able to kill it forever.
+/// promise: a deploy or a crash must never quietly abandon it, so recovery
+/// picks up whatever was left unfinished — at startup, and on a timer
+/// thereafter, because the process that abandons work is not always the process
+/// that has to notice. The counterpart is an attempt cap: a document that kills
+/// the process must not be able to kill it forever.
 /// </summary>
 public class CrashRecoveryTests(IngestionApiFixture fixture) : IClassFixture<IngestionApiFixture>
 {
@@ -114,6 +118,88 @@ public class CrashRecoveryTests(IngestionApiFixture fixture) : IClassFixture<Ing
         release();
         await WaitForStatusAsync(busy.CreateClient(), ingestionId, "Completed");
         Assert.Equal(3, await CountChunksAsync(ingestionId));
+    }
+
+    [Fact]
+    public async Task Work_orphaned_while_the_fleet_stays_up_is_taken_over_without_a_restart()
+    {
+        Guid ingestionId;
+        await using (var accepting = fixture.CreateFactory(new ScriptedChatClient(), workerCount: 0))
+            ingestionId = await PostAsync(accepting, "pat-orphaned");
+
+        // Another instance owns it. The claim is the same advisory lock a worker
+        // holds for the length of a run, taken here on a connection of the
+        // test's own so that the owner can be killed on cue — and never
+        // released politely, because an owner that tidies up is not an orphan.
+        //
+        // Unpooled on purpose. Closing a pooled connection hands the session
+        // back to Npgsql rather than ending it, and the DISCARD ALL that would
+        // drop its advisory locks is deferred until something reuses it — so a
+        // pooled "death" here would keep holding the lock and prove nothing. A
+        // process that actually dies drops its socket, which is what this does.
+        var owner = new NpgsqlConnection(
+            new NpgsqlConnectionStringBuilder(fixture.ConnectionString) { Pooling = false }.ConnectionString);
+        await owner.OpenAsync();
+        Assert.NotNull(await PostgresAdvisoryLock.TryAcquireAsync(
+            owner, PostgresAdvisoryLock.KeyFor(ingestionId)));
+
+        var chat = new ScriptedChatClient();
+        chat.EnqueueResponse(ValidPlan);
+        await using var sweeping = fixture.CreateFactory(chat, sweepInterval: TimeSpan.FromMilliseconds(200));
+        _ = sweeping.Server;
+
+        // Sweeping repeatedly is not licence to touch work someone else holds:
+        // several passes go by and this instance keeps its hands off. Asserted
+        // on this ingestion's own attempt count rather than on the chat client,
+        // which would also answer for anything else the sweep found.
+        await Task.Delay(1000);
+        Assert.Equal(0, await ReadAttemptsAsync(ingestionId));
+
+        // The owner dies. Its connection drops, Postgres releases the lock with
+        // it, and the ingestion is now unfinished and unowned — the state that
+        // used to sit there until somebody happened to redeploy.
+        await owner.CloseAsync();
+        await owner.DisposeAsync();
+
+        // Nothing restarts. The instance that had been skipping it takes it over.
+        await WaitForStatusAsync(sweeping.CreateClient(), ingestionId, "Completed");
+        Assert.Equal(3, await CountChunksAsync(ingestionId));
+    }
+
+    [Fact]
+    public async Task A_stale_queue_entry_does_not_re_run_an_ingestion_that_has_since_finished()
+    {
+        var client = fixture.Factory.CreateClient();
+        fixture.ChatClient.EnqueueResponse(ValidPlan);
+        var ingestionId = await PostAsync(fixture.Factory, "pat-stale-entry");
+        await WaitForStatusAsync(client, ingestionId, "Completed");
+
+        var attempts = await ReadAttemptsAsync(ingestionId);
+        var chunks = await CountChunksAsync(ingestionId);
+        var prompts = fixture.ChatClient.ReceivedPrompts.Count;
+
+        // A queue entry outlives the run it named: another instance's recovery
+        // queued this id too, and only reaches it now that the work is over.
+        // The advisory lock is free — the run it guarded has ended — so the
+        // ingestion's own state is the only thing left to refuse a second run.
+        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+            await scope.ServiceProvider.GetRequiredService<IngestionQueue>().EnqueueAsync(ingestionId);
+
+        await Task.Delay(750);
+
+        // Re-running it would re-embed a document already stored, and — where a
+        // correction landed after this ingestion completed — supersede the
+        // correction with the version it replaced.
+        var status = await client.GetFromJsonAsync<JsonElement>($"/ingestions/{ingestionId}");
+        Assert.Equal("Completed", status.GetProperty("status").GetString());
+        Assert.Equal(attempts, await ReadAttemptsAsync(ingestionId));
+        Assert.Equal(chunks, await CountChunksAsync(ingestionId));
+        Assert.Equal(prompts, fixture.ChatClient.ReceivedPrompts.Count);
+
+        // And it is refused quietly, as work that is simply no longer anyone's
+        // to do — not reported as a document that exhausted its attempts, which
+        // would turn a finished ingestion into a failed one.
+        Assert.Null(status.GetProperty("errorMessage").GetString());
     }
 
     [Fact]
