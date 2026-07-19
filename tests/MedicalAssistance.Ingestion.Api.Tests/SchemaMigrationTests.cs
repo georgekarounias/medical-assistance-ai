@@ -80,6 +80,26 @@ public class SchemaMigrationTests(IngestionApiFixture fixture) : IClassFixture<I
         Assert.Equal($"vector({IngestionDbContext.EmbeddingDimensions})", (string)(await command.ExecuteScalarAsync())!);
     }
 
+    [Fact]
+    public void A_worker_count_that_could_starve_the_connection_pool_refuses_to_start()
+    {
+        // Each worker can hold two connections at once — the one carrying its
+        // advisory lock for the whole run, and one for its database work — so a
+        // high worker count against a small pool deadlocks: workers wait for
+        // connections only they can release. The service says so on the way up
+        // rather than hanging later with nothing in the logs to explain it.
+        var startup = Assert.Throws<InvalidOperationException>(() =>
+        {
+            using var factory = fixture.CreateFactory(new Fakes.ScriptedChatClient(), workerCount: 40);
+            factory.WithWebHostBuilder(builder =>
+                    builder.UseSetting("ConnectionStrings:Postgres", $"{fixture.ConnectionString};Maximum Pool Size=20"))
+                .CreateClient();
+        });
+
+        Assert.Contains("WorkerCount", startup.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("MaxPoolSize", startup.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     private async Task<List<string>> ReadColumnsAsync(string table)
     {
         await using var connection = new NpgsqlConnection(fixture.ConnectionString);

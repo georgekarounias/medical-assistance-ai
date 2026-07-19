@@ -26,6 +26,26 @@ if (builder.Configuration.GetSection(ApiKeyAuthentication.KeysConfigurationPath)
         $"{ApiKeyAuthentication.KeysConfigurationPath} must contain at least one API secret. " +
         "Configure two while rotating keys.");
 }
+// Each worker can hold two connections at once: the one carrying its advisory
+// lock for the whole run, and one for the database work inside it. Workers are
+// capped at half the pool so submissions and status polls — which need
+// connections of their own — can never be starved by ingestion.
+//
+// Checked here rather than discovered under load: raising WorkerCount is the
+// obvious thing to try when ingestion looks slow, and the failure it causes is
+// the service hanging with nothing in the logs naming the cause.
+const int connectionsPerWorker = 2;
+var workerCount = builder.Configuration.GetValue("Ingestion:WorkerCount", 4);
+var maxPoolSize = new NpgsqlConnectionStringBuilder(connectionString).MaxPoolSize;
+if (workerCount * connectionsPerWorker > maxPoolSize / 2)
+{
+    throw new InvalidOperationException(
+        $"Ingestion:WorkerCount is {workerCount}, which can hold up to " +
+        $"{workerCount * connectionsPerWorker} of the connection pool's {maxPoolSize} connections and " +
+        "leaves too little for serving requests. Lower the worker count, or raise MaxPoolSize in " +
+        "ConnectionStrings:Postgres.");
+}
+
 var dataSourceBuilder = new NpgsqlDataSourceBuilder(connectionString);
 dataSourceBuilder.UseVector();
 var dataSource = dataSourceBuilder.Build();

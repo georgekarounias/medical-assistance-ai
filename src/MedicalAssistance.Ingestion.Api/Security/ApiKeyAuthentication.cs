@@ -34,7 +34,7 @@ public static class ApiKeyAuthentication
 /// </summary>
 public sealed class ApiKeyAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>
 {
-    private readonly byte[][] _validKeys;
+    private readonly byte[][] _validKeyHashes;
 
     /// <summary>Creates the handler with the secrets currently configured.</summary>
     public ApiKeyAuthenticationHandler(
@@ -44,9 +44,11 @@ public sealed class ApiKeyAuthenticationHandler : AuthenticationHandler<Authenti
         IConfiguration configuration)
         : base(options, logger, encoder)
     {
-        _validKeys = (configuration.GetSection(ApiKeyAuthentication.KeysConfigurationPath).Get<string[]>() ?? [])
+        // Configuration is read per request rather than once, which is what lets
+        // a rotated key take effect without a restart.
+        _validKeyHashes = (configuration.GetSection(ApiKeyAuthentication.KeysConfigurationPath).Get<string[]>() ?? [])
             .Where(key => !string.IsNullOrWhiteSpace(key))
-            .Select(Encoding.UTF8.GetBytes)
+            .Select(key => SHA256.HashData(Encoding.UTF8.GetBytes(key)))
             .ToArray();
     }
 
@@ -56,13 +58,17 @@ public sealed class ApiKeyAuthenticationHandler : AuthenticationHandler<Authenti
         if (!Request.Headers.TryGetValue(ApiKeyAuthentication.HeaderName, out var presented))
             return Task.FromResult(AuthenticateResult.Fail($"Missing {ApiKeyAuthentication.HeaderName} header."));
 
-        var presentedBytes = Encoding.UTF8.GetBytes(presented.ToString());
+        // Digests, not the keys themselves. FixedTimeEquals is only fixed-time
+        // for operands of equal length — it returns immediately when they differ
+        // — so comparing raw keys would let the time taken reveal how long the
+        // real secret is. Two SHA-256 hashes are always 32 bytes, so there is
+        // nothing left for the timing to expose.
+        var presentedHash = SHA256.HashData(Encoding.UTF8.GetBytes(presented.ToString()));
 
-        // Compared in fixed time, and every key is checked even once one has
-        // matched: how long the answer takes must not narrow down the secret.
+        // Every key is checked even once one has matched, for the same reason.
         var matched = false;
-        foreach (var key in _validKeys)
-            matched |= CryptographicOperations.FixedTimeEquals(presentedBytes, key);
+        foreach (var hash in _validKeyHashes)
+            matched |= CryptographicOperations.FixedTimeEquals(presentedHash, hash);
 
         if (!matched)
             return Task.FromResult(AuthenticateResult.Fail("The presented API key is not valid."));

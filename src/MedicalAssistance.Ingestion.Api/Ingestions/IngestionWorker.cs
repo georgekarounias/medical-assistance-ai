@@ -34,6 +34,9 @@ public sealed class IngestionWorker(
         return Task.WhenAll(Enumerable.Range(0, workerCount).Select(_ => RunWorkerAsync(stoppingToken)));
     }
 
+    // Each concurrent run holds a connection of its own for the length of the
+    // ingestion. Program.cs refuses to start if the configured worker count
+    // could claim enough of the pool to starve request handling.
     private async Task RunWorkerAsync(CancellationToken ct)
     {
         var maxAttempts = configuration.GetValue("Ingestion:MaxAttempts", 3);

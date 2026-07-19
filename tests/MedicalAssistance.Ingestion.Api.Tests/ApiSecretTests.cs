@@ -62,6 +62,28 @@ public class ApiSecretTests(IngestionApiFixture fixture) : IClassFixture<Ingesti
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("t")]
+    [InlineData("test-api-key-primar")]                    // one character short
+    [InlineData("test-api-key-primaryy")]                  // one character long
+    [InlineData("test-api-key-primary-with-more-after")]   // a valid key as a prefix
+    [InlineData("XXXX-XXX-XXX-XXXXXXX")]                   // right length, wrong content
+    public async Task A_secret_of_any_length_is_refused_unless_it_matches_exactly(string apiKey)
+    {
+        // Lengths either side of a real key, and one that contains a real key.
+        // The comparison works on SHA-256 digests, so every candidate is 32 bytes
+        // by the time it is checked and how long the answer takes cannot narrow
+        // down the length of the secret. That property is structural and not
+        // something a timing assertion could test without being flaky, so what
+        // is asserted here is the behaviour it must not have broken.
+        var client = CreateClientWith(apiKey);
+
+        var response = await client.GetAsync($"/ingestions/{Guid.NewGuid()}");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
     [Fact]
     public async Task The_published_contract_tells_the_caller_which_header_to_send()
     {
