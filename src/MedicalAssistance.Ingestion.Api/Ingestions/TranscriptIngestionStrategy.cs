@@ -191,14 +191,36 @@ public sealed class TranscriptIngestionStrategy
         return chunks;
     }
 
-    private static string StripCodeFences(string text)
+    /// <summary>
+    /// Unwraps a ```-fenced response, tolerating one that was never closed.
+    ///
+    /// A closing fence is not guaranteed: an answer cut off at the output-token
+    /// limit has an opening fence and nothing else, and long transcripts make
+    /// that more likely rather than less. The opening fence is removed first and
+    /// the closing one looked for only in what remains, so it can never find the
+    /// opening fence and slice backwards — which used to throw out of here, past
+    /// the JSON handling, and skip the corrective retry meant for bad answers.
+    ///
+    /// Never throws: whatever comes back is handed to the parser, and an
+    /// unreadable response fails as unreadable rather than as a string index.
+    /// </summary>
+    private static string StripCodeFences(string? text)
     {
-        var trimmed = text.Trim();
+        var trimmed = text?.Trim() ?? string.Empty;
         if (!trimmed.StartsWith("```"))
             return trimmed;
+
+        // Everything after the opening fence line — which carries the optional
+        // language tag, as in ```json.
         var firstNewline = trimmed.IndexOf('\n');
-        var lastFence = trimmed.LastIndexOf("```", StringComparison.Ordinal);
-        return trimmed[(firstNewline + 1)..lastFence].Trim();
+        if (firstNewline < 0)
+            return string.Empty;
+        var body = trimmed[(firstNewline + 1)..];
+
+        // Closing fence if there is one; the whole body if there is not, so a
+        // plan whose fence the model merely forgot is still read.
+        var closingFence = body.LastIndexOf("```", StringComparison.Ordinal);
+        return (closingFence < 0 ? body : body[..closingFence]).Trim();
     }
 
     private sealed record ChunkPlan(List<PlannedChunk> Chunks, string Summary);

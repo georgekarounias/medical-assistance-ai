@@ -54,10 +54,12 @@ public static class IngestionRequestValidation
     }
 
     /// <summary>
-    /// A transcript is identified by (sessionId, sequenceNumber) — the pair that
-    /// later tells a Correction from a Continuation. Without both, a re-upload
-    /// could not be recognised as replacing anything, so the pair is mandatory
-    /// from the very first submission.
+    /// A transcript is identified by doctor, patient, session and sequence
+    /// number together. The doctor and patient are already required of every
+    /// document; these two complete the key, and they are what later tells a
+    /// Correction from a Continuation. Without them a re-upload could not be
+    /// recognised as replacing anything, so both are mandatory from the very
+    /// first submission.
     /// </summary>
     private static void ValidateSessionIdentity(IngestionRequest request, Dictionary<string, string[]> errors)
     {

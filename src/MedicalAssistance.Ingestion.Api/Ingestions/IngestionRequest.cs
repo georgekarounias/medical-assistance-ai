@@ -4,8 +4,10 @@ namespace MedicalAssistance.Ingestion.Api.Ingestions;
 
 /// <summary>
 /// A clinical Document submitted for ingestion by the existing backend.
-/// The unit that flows through the pipeline; identified per Document Type
-/// (a transcript's identity is <see cref="SessionId"/> + <see cref="SequenceNumber"/>).
+/// The unit that flows through the pipeline; identified per Document Type — a
+/// transcript's identity is <see cref="DoctorId"/> + <see cref="PatientId"/> +
+/// <see cref="SessionId"/> + <see cref="SequenceNumber"/>, assembled by
+/// <see cref="DocumentIdentity"/>.
 ///
 /// Mandatory fields are enforced by <see cref="IngestionRequestValidation"/>
 /// rather than by the deserializer: a missing field has to come back as a named

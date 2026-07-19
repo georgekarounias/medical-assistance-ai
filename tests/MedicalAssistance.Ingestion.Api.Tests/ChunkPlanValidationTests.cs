@@ -63,6 +63,76 @@ public class ChunkPlanValidationTests(IngestionApiFixture fixture) : IClassFixtu
         Assert.Equal(0, await CountChunksAsync(ingestionId));
     }
 
+    /// <summary>
+    /// A response cut off at the output-token limit: an opening code fence, and
+    /// nothing closing it. More likely on exactly the long transcripts this
+    /// service exists to handle.
+    /// </summary>
+    private const string TruncatedFencedPlan = """
+        ```json
+        {
+          "chunks": [
+            { "startLine": 0, "endLine": 1, "contextBlurb": "Complaint discu
+        """;
+
+    [Fact]
+    public async Task A_truncated_response_gets_the_same_corrective_retry_as_any_other_bad_answer()
+    {
+        var promptsBefore = fixture.ChatClient.ReceivedPrompts.Count;
+        fixture.ChatClient.EnqueueResponse(TruncatedFencedPlan);
+        fixture.ChatClient.EnqueueResponse(ValidPlan);
+
+        var client = fixture.Factory.CreateClient();
+        var ingestionId = await PostTranscriptAsync(client, patientId: "pat-truncated");
+        var (status, detail) = await WaitForTerminalStatusAsync(client, ingestionId);
+
+        // An unreadable answer is an unreadable answer, however it got that way.
+        // It must reach the retry rather than escaping as an exception from the
+        // string handling, which would skip the one correction the design allows.
+        Assert.True(status == "Completed", $"Expected Completed but got: {detail}");
+        Assert.Equal(promptsBefore + 2, fixture.ChatClient.ReceivedPrompts.Count);
+        Assert.Contains("invalid", fixture.ChatClient.ReceivedPrompts[^1], StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(3, await CountChunksAsync(ingestionId));
+    }
+
+    [Fact]
+    public async Task Two_truncated_responses_fail_with_a_reason_that_names_the_model_not_a_string_index()
+    {
+        fixture.ChatClient.EnqueueResponse(TruncatedFencedPlan);
+        fixture.ChatClient.EnqueueResponse(TruncatedFencedPlan);
+
+        var client = fixture.Factory.CreateClient();
+        var ingestionId = await PostTranscriptAsync(client, patientId: "pat-truncated-twice");
+        var (status, detail) = await WaitForTerminalStatusAsync(client, ingestionId);
+
+        Assert.True(status == "Failed", $"Expected Failed but got: {detail}");
+        Assert.Contains("invalid chunk plan", detail, StringComparison.OrdinalIgnoreCase);
+
+        // The old failure said "length ('-8') must be a non-negative value",
+        // which sends whoever reads it looking in the wrong place entirely.
+        Assert.DoesNotContain("non-negative", detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, await CountChunksAsync(ingestionId));
+    }
+
+    /// <summary>
+    /// A well-formed plan whose closing fence the model simply forgot. Nothing is
+    /// missing but the fence, so the plan is recoverable and ought to be used.
+    /// </summary>
+    [Fact]
+    public async Task A_plan_missing_only_its_closing_fence_is_still_read()
+    {
+        var promptsBefore = fixture.ChatClient.ReceivedPrompts.Count;
+        fixture.ChatClient.EnqueueResponse($"```json\n{ValidPlan}");
+
+        var client = fixture.Factory.CreateClient();
+        var ingestionId = await PostTranscriptAsync(client, patientId: "pat-unclosed-fence");
+        var (status, detail) = await WaitForTerminalStatusAsync(client, ingestionId);
+
+        Assert.True(status == "Completed", $"Expected Completed but got: {detail}");
+        Assert.Equal(promptsBefore + 1, fixture.ChatClient.ReceivedPrompts.Count); // no retry needed
+        Assert.Equal(3, await CountChunksAsync(ingestionId));
+    }
+
     // Each test uses its own patient: one patient's identical content is
     // deduplicated across sessions, and these tests need real ingestions.
     private static async Task<Guid> PostTranscriptAsync(HttpClient client, string patientId)
