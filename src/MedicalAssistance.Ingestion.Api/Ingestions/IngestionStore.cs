@@ -22,12 +22,29 @@ public sealed record ChunkToStore(
     Vector Embedding);
 
 /// <summary>
-/// Who an Ingestion belongs to — the routing information every status event
-/// carries, because this service has no idea which devices are online.
+/// What an Ingestion is about: who it belongs to — the routing information every
+/// status event carries, because this service has no idea which devices are
+/// online — and which Document it concerns.
 /// </summary>
+/// <param name="DocumentType">The declared Document Type.</param>
 /// <param name="DoctorId">The doctor who submitted the document.</param>
 /// <param name="PatientId">The patient the document is about.</param>
-public sealed record IngestionIdentity(string DoctorId, string PatientId);
+/// <param name="SessionId">Session identity component (transcripts only).</param>
+/// <param name="SequenceNumber">Transcript ordinal within its Session (transcripts only).</param>
+public sealed record IngestionIdentity(
+    string DocumentType, string DoctorId, string PatientId, string? SessionId, int? SequenceNumber)
+{
+    /// <summary>
+    /// The Document this Ingestion is of. Assembled here so that everything
+    /// telling a client about an ingestion names the document the same way, and
+    /// no consumer has to rebuild the identifier from its parts.
+    /// </summary>
+    public string DocumentId => DocumentIdentity.For(DocumentType, DoctorId, PatientId, SessionId, SequenceNumber);
+
+    /// <summary>The identity of a submission that has not been stored yet.</summary>
+    public static IngestionIdentity Of(IngestionRequest request) => new(
+        request.DocumentType, request.DoctorId, request.PatientId, request.SessionId, request.SequenceNumber);
+}
 
 /// <summary>What came of asking for an Ingestion to be rerun.</summary>
 public enum RetryOutcome
@@ -243,7 +260,8 @@ public sealed class IngestionStore(IngestionDbContext db)
     public Task<IngestionIdentity?> GetIdentityAsync(Guid id, CancellationToken ct = default) =>
         db.Ingestions.AsNoTracking()
             .Where(i => i.Id == id)
-            .Select(i => new IngestionIdentity(i.DoctorId, i.PatientId))
+            .Select(i => new IngestionIdentity(
+                i.DocumentType, i.DoctorId, i.PatientId, i.SessionId, i.SequenceNumber))
             .FirstOrDefaultAsync(ct)!;
 
     /// <summary>Returns the lifecycle state of one Ingestion, or null if the id is unknown.</summary>
@@ -263,19 +281,31 @@ public sealed class IngestionStore(IngestionDbContext db)
     /// caller asking for history has no use case yet that a page cursor would
     /// serve better than a limit.
     /// </summary>
-    public Task<List<IngestionSummary>> ListForDoctorAsync(
+    public async Task<List<IngestionSummary>> ListForDoctorAsync(
         string doctorId, bool activeOnly, int limit, CancellationToken ct = default)
     {
         var query = db.Ingestions.AsNoTracking().Where(i => i.DoctorId == doctorId);
         if (activeOnly)
             query = query.Where(i => i.Status == "Queued" || i.Status == "Processing");
 
-        return query
+        // Materialized before the document id is assembled: building it is C#
+        // that no database can run, and the list is capped anyway.
+        var ingestions = await query
             .OrderByDescending(i => i.UpdatedAt)
             .Take(limit)
+            .Select(i => new
+            {
+                i.Id, i.DocumentType, i.PatientId, i.SessionId, i.SequenceNumber,
+                i.Status, i.ErrorMessage, i.CreatedAt, i.UpdatedAt,
+            })
+            .ToListAsync(ct);
+
+        return ingestions
             .Select(i => new IngestionSummary
             {
                 IngestionId = i.Id,
+                DocumentId = DocumentIdentity.For(
+                    i.DocumentType, doctorId, i.PatientId, i.SessionId, i.SequenceNumber),
                 DocumentType = i.DocumentType,
                 PatientId = i.PatientId,
                 SessionId = i.SessionId,
@@ -285,7 +315,7 @@ public sealed class IngestionStore(IngestionDbContext db)
                 CreatedAt = i.CreatedAt,
                 UpdatedAt = i.UpdatedAt,
             })
-            .ToListAsync(ct);
+            .ToList();
     }
 
     /// <summary>

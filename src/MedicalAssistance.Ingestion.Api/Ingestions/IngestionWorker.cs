@@ -109,13 +109,16 @@ public sealed class IngestionWorker(
         var store = scope.ServiceProvider.GetRequiredService<IngestionStore>();
         await store.MarkFailedAsync(ingestionId, reason, CancellationToken.None);
 
-        // The stored payload is the only place the doctor and patient are still
-        // known here — the run that had them may have died mid-flight.
+        // Read back from the record rather than carried in: the run that had this
+        // in hand may have died mid-flight. Its own columns, not the stored
+        // payload, so announcing a failure never deserializes a whole transcript.
         try
         {
-            var request = await store.LoadRequestAsync(ingestionId, CancellationToken.None);
-            await scope.ServiceProvider.GetRequiredService<IngestionStatusPublisher>().PublishAsync(
-                ingestionId, request.DoctorId, request.PatientId, IngestionStages.Failed, reason);
+            if (await store.GetIdentityAsync(ingestionId, CancellationToken.None) is { } identity)
+            {
+                await scope.ServiceProvider.GetRequiredService<IngestionStatusPublisher>().PublishAsync(
+                    ingestionId, identity, IngestionStages.Failed, reason);
+            }
         }
         catch (Exception exception)
         {

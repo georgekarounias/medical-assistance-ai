@@ -82,7 +82,7 @@ public sealed class TranscriptIngestionStrategy
     }
 
     private Task PublishStageAsync(Guid ingestionId, IngestionRequest request, string stage, CancellationToken ct) =>
-        _statusPublisher.PublishAsync(ingestionId, request.DoctorId, request.PatientId, stage, ct: ct);
+        _statusPublisher.PublishAsync(ingestionId, IngestionIdentity.Of(request), stage, ct: ct);
 
     private static IReadOnlyList<string> SplitIntoLines(string transcript) =>
         transcript

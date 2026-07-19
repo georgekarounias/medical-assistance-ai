@@ -65,6 +65,11 @@ public class BackfillQueryTests(IngestionApiFixture fixture) : IClassFixture<Ing
         Assert.Equal("SessionTranscript", resumed.DocumentType);
         Assert.Equal("sess-pat-running-one", resumed.SessionId);
         Assert.Equal(1, resumed.SequenceNumber);
+
+        // The assembled document id, not just the parts to build it from: every
+        // consumer would otherwise reimplement the same string, and a change to
+        // how documents are identified would break each of them quietly.
+        Assert.Equal("doc-reconnect#pat-running-one#sess-pat-running-one#1", resumed.DocumentId);
     }
 
     [Fact]
@@ -147,6 +152,7 @@ public class BackfillQueryTests(IngestionApiFixture fixture) : IClassFixture<Ing
 
     private sealed record IngestionSummaryDto(
         Guid IngestionId,
+        string DocumentId,
         string DocumentType,
         string PatientId,
         string? SessionId,

@@ -63,6 +63,31 @@ public class StatusEventTests(IngestionApiFixture fixture) : IClassFixture<Inges
         Assert.All(events, e => Assert.Equal("doc-watching", e.DoctorId));
         Assert.All(events, e => Assert.Equal("pat-watched", e.PatientId));
         Assert.All(events, e => Assert.Null(e.ErrorMessage));
+
+        // And says which document it is about, so a client can name the
+        // transcript on screen without a round trip to work out what an
+        // ingestion id refers to.
+        Assert.All(events, e => Assert.Equal("doc-watching#pat-watched#sess-pat-watched#1", e.DocumentId));
+        Assert.All(events, e => Assert.Equal("sess-pat-watched", e.SessionId));
+    }
+
+    [Fact]
+    public async Task A_failure_names_the_document_it_could_not_ingest()
+    {
+        var received = new ConcurrentQueue<IngestionStatusEvent>();
+        await using var connection = await ConnectAsync(received);
+
+        // No scripted response, so this fails. The failure path rebuilds the
+        // event from the stored payload rather than from a live request, so it
+        // is the one most likely to lose the document it is talking about.
+        var client = fixture.Factory.CreateClient();
+        var ingestionId = await PostAsync(client, "pat-failed-named");
+
+        var failure = (await WaitForTerminalEventAsync(received, ingestionId))[^1];
+
+        Assert.Equal(IngestionStages.Failed, failure.Stage);
+        Assert.Equal("doc-watching#pat-failed-named#sess-pat-failed-named#1", failure.DocumentId);
+        Assert.Equal("sess-pat-failed-named", failure.SessionId);
     }
 
     [Fact]

@@ -1,3 +1,4 @@
+using MedicalAssistance.Ingestion.Api.Ingestions;
 using Microsoft.AspNetCore.SignalR;
 
 namespace MedicalAssistance.Ingestion.Api.Realtime;
@@ -39,6 +40,17 @@ public sealed record IngestionStatusEvent
     public required Guid IngestionId { get; init; }
 
     /// <summary>
+    /// The Document being ingested. Present so a client can say which transcript
+    /// it is reporting on without a second call to discover what an ingestion id
+    /// refers to — and so no consumer rebuilds the identifier from its parts,
+    /// which would leave each of them to break quietly if it ever changed.
+    /// </summary>
+    public required string DocumentId { get; init; }
+
+    /// <summary>The Session the document belongs to (transcripts and session-linked notes).</summary>
+    public string? SessionId { get; init; }
+
+    /// <summary>
     /// The doctor who submitted the document. Present on every event because the
     /// backend routes on it: this service has no idea which devices are online.
     /// </summary>
@@ -73,11 +85,16 @@ public sealed class IngestionStatusPublisher(
     /// <summary>The client-side method name the backend subscribes to.</summary>
     public const string ClientMethod = "IngestionStatusChanged";
 
-    /// <summary>Announces that an Ingestion reached a stage.</summary>
+    /// <summary>
+    /// Announces that an Ingestion reached a stage.
+    ///
+    /// Takes the whole identity rather than loose ids so that every event names
+    /// its document; a caller cannot announce a stage while leaving out what the
+    /// stage is about.
+    /// </summary>
     public async Task PublishAsync(
         Guid ingestionId,
-        string doctorId,
-        string patientId,
+        IngestionIdentity identity,
         string stage,
         string? errorMessage = null,
         CancellationToken ct = default)
@@ -85,8 +102,10 @@ public sealed class IngestionStatusPublisher(
         var statusEvent = new IngestionStatusEvent
         {
             IngestionId = ingestionId,
-            DoctorId = doctorId,
-            PatientId = patientId,
+            DocumentId = identity.DocumentId,
+            DoctorId = identity.DoctorId,
+            PatientId = identity.PatientId,
+            SessionId = identity.SessionId,
             Stage = stage,
             ErrorMessage = errorMessage,
             OccurredAt = DateTimeOffset.UtcNow,

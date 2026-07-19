@@ -31,10 +31,7 @@ public sealed class IngestionQueue(
     public async Task EnqueueAsync(Guid ingestionId, CancellationToken ct = default)
     {
         if (await store.GetIdentityAsync(ingestionId, ct) is { } identity)
-        {
-            await publisher.PublishAsync(
-                ingestionId, identity.DoctorId, identity.PatientId, IngestionStages.Queued, ct: ct);
-        }
+            await publisher.PublishAsync(ingestionId, identity, IngestionStages.Queued, ct: ct);
 
         await channel.Writer.WriteAsync(ingestionId, ct);
     }

@@ -91,6 +91,13 @@ public sealed record IngestionSummary
     /// <summary>Identifier of the Ingestion.</summary>
     public required Guid IngestionId { get; init; }
 
+    /// <summary>
+    /// The Document this Ingestion is of — the same identifier the status events
+    /// and the patient document list use, assembled here so no consumer has to
+    /// rebuild it from the parts below.
+    /// </summary>
+    public required string DocumentId { get; init; }
+
     /// <summary>The declared Document Type.</summary>
     public required string DocumentType { get; init; }
 
