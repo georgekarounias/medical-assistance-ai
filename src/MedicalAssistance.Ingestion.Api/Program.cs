@@ -102,6 +102,15 @@ builder.Services.AddAuthorization(options =>
     options.FallbackPolicy = new AuthorizationPolicyBuilder()
         .RequireAuthenticatedUser()
         .Build();
+
+    // Erasure needs the separate admin secret on top of being authenticated: a
+    // leaked everyday key gets past the fallback policy but not this one, so it
+    // can read and un-ingest but never erase a patient (ADR-0007). With no admin
+    // key configured, nothing carries the claim and every erasure is refused —
+    // fail-closed, which is the right default for the most destructive operation.
+    options.AddPolicy(ApiKeyAuthentication.ErasurePolicyName, policy => policy
+        .RequireAuthenticatedUser()
+        .RequireClaim(ApiKeyAuthentication.AdminClaimType, ApiKeyAuthentication.AdminClaimValue));
 });
 
 builder.Services.AddSingleton(dataSource);

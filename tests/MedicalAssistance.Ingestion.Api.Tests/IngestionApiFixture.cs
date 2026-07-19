@@ -39,6 +39,13 @@ public sealed class IngestionApiFixture : IAsyncLifetime
     /// <summary>A second valid secret — the state the service is in mid-rotation.</summary>
     public const string RotationApiKey = "test-api-key-secondary";
 
+    /// <summary>
+    /// The admin secret GDPR Erasure requires (ADR-0007). A different key from
+    /// the everyday ones, so a test proving a leaked everyday key cannot erase
+    /// has a genuinely separate credential to hold up.
+    /// </summary>
+    public const string AdminApiKey = "test-admin-key-erasure";
+
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("pgvector/pgvector:pg17").Build();
 
     public ScriptedChatClient ChatClient { get; } = new();
@@ -78,6 +85,7 @@ public sealed class IngestionApiFixture : IAsyncLifetime
             builder.UseSetting("Chunking:MaxTokens", MaxChunkTokens.ToString());
             builder.UseSetting("Authentication:ApiKeys:0", ApiKey);
             builder.UseSetting("Authentication:ApiKeys:1", RotationApiKey);
+            builder.UseSetting("Authentication:AdminApiKeys:0", AdminApiKey);
             builder.ConfigureServices(services =>
             {
                 services.AddSingleton<IChatClient>(chatClient);

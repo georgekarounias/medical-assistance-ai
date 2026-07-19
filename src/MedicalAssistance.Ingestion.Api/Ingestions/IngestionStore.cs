@@ -495,6 +495,48 @@ public sealed class IngestionStore(IngestionDbContext db)
         UpdateStatusAsync(id, "Failed", errorMessage, ct);
 
     /// <summary>
+    /// GDPR Erasure: removes everything the service holds about a patient — all
+    /// chunks and every Ingestion row, the Deleted tombstones un-ingest leaves
+    /// included — and writes one <see cref="ErasureLogEntry" /> recording that it
+    /// happened, in a single transaction so the record and the removal cannot
+    /// come apart.
+    ///
+    /// It guarantees a state (no data for this patient) rather than acting on a
+    /// precondition: a patient the service holds nothing about is a valid erasure
+    /// of zero rows, still logged, so an erasure request always has an auditable
+    /// answer and running it twice is safe.
+    ///
+    /// The log is the one thing erasure does not erase — its subject is gone, so
+    /// the act has to be accountable on its own. Chunks are deleted before
+    /// ingestions because a chunk points at its ingestion; the erasure_log row
+    /// references neither, so it survives both.
+    /// </summary>
+    public async Task<(int IngestionsErased, int ChunksErased)> ErasePatientDataAsync(
+        string patientId, string erasedBy, CancellationToken ct = default)
+    {
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+
+        // Chunks first: each carries a foreign key to its ingestion, so the
+        // ingestion rows cannot go until nothing points at them.
+        var chunksErased = await db.Chunks.Where(c => c.PatientId == patientId).ExecuteDeleteAsync(ct);
+        var ingestionsErased = await db.Ingestions.Where(i => i.PatientId == patientId).ExecuteDeleteAsync(ct);
+
+        db.ErasureLog.Add(new ErasureLogEntry
+        {
+            Id = Guid.NewGuid(),
+            PatientId = patientId,
+            ErasedBy = erasedBy,
+            ErasedAt = DateTimeOffset.UtcNow,
+            IngestionsErased = ingestionsErased,
+            ChunksErased = chunksErased,
+        });
+        await db.SaveChangesAsync(ct);
+
+        await transaction.CommitAsync(ct);
+        return (ingestionsErased, chunksErased);
+    }
+
+    /// <summary>
     /// Un-ingests a Document: in one transaction its chunks are deleted, its raw
     /// payload is scrubbed, and its live Ingestion becomes a Deleted tombstone
     /// naming who removed it and when. The canonical case is a wrong-patient

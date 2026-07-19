@@ -23,6 +23,27 @@ public static class ApiKeyAuthentication
 
     /// <summary>Configuration section holding the currently valid secrets.</summary>
     public const string KeysConfigurationPath = "Authentication:ApiKeys";
+
+    /// <summary>
+    /// Configuration section holding the admin secrets GDPR Erasure requires
+    /// (ADR-0007). Separate from the everyday keys, so a leaked everyday key
+    /// cannot erase a patient. An array like the everyday keys, so the admin
+    /// secret rotates with two active keys and no downtime.
+    /// </summary>
+    public const string AdminKeysConfigurationPath = "Authentication:AdminApiKeys";
+
+    /// <summary>
+    /// Claim stamped on a caller that presented an admin secret. The erasure
+    /// policy requires it; nothing else does, so an admin key is strictly more
+    /// privileged than an everyday one rather than a parallel credential.
+    /// </summary>
+    public const string AdminClaimType = "capability";
+
+    /// <inheritdoc cref="AdminClaimType" />
+    public const string AdminClaimValue = "erase-patient-data";
+
+    /// <summary>Authorization policy the Erasure endpoint carries; satisfied only by an admin secret.</summary>
+    public const string ErasurePolicyName = "CanErasePatientData";
 }
 
 /// <summary>
@@ -35,6 +56,7 @@ public static class ApiKeyAuthentication
 public sealed class ApiKeyAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>
 {
     private readonly byte[][] _validKeyHashes;
+    private readonly byte[][] _adminKeyHashes;
 
     /// <summary>Creates the handler with the secrets currently configured.</summary>
     public ApiKeyAuthenticationHandler(
@@ -46,11 +68,15 @@ public sealed class ApiKeyAuthenticationHandler : AuthenticationHandler<Authenti
     {
         // Configuration is read per request rather than once, which is what lets
         // a rotated key take effect without a restart.
-        _validKeyHashes = (configuration.GetSection(ApiKeyAuthentication.KeysConfigurationPath).Get<string[]>() ?? [])
-            .Where(key => !string.IsNullOrWhiteSpace(key))
-            .Select(key => SHA256.HashData(Encoding.UTF8.GetBytes(key)))
-            .ToArray();
+        _validKeyHashes = HashKeys(configuration, ApiKeyAuthentication.KeysConfigurationPath);
+        _adminKeyHashes = HashKeys(configuration, ApiKeyAuthentication.AdminKeysConfigurationPath);
     }
+
+    private static byte[][] HashKeys(IConfiguration configuration, string path) =>
+        (configuration.GetSection(path).Get<string[]>() ?? [])
+        .Where(key => !string.IsNullOrWhiteSpace(key))
+        .Select(key => SHA256.HashData(Encoding.UTF8.GetBytes(key)))
+        .ToArray();
 
     /// <inheritdoc />
     protected override Task<AuthenticateResult> HandleAuthenticateAsync()
@@ -65,16 +91,29 @@ public sealed class ApiKeyAuthenticationHandler : AuthenticationHandler<Authenti
         // nothing left for the timing to expose.
         var presentedHash = SHA256.HashData(Encoding.UTF8.GetBytes(presented.ToString()));
 
-        // Every key is checked even once one has matched, for the same reason.
-        var matched = false;
-        foreach (var hash in _validKeyHashes)
-            matched |= CryptographicOperations.FixedTimeEquals(presentedHash, hash);
+        // An admin key authenticates like any other and additionally carries the
+        // erasure capability — strictly more privileged, not a separate identity.
+        // Both sets are swept in full even once one has matched, for the same
+        // timing reason.
+        var matchedEveryday = MatchesAny(presentedHash, _validKeyHashes);
+        var matchedAdmin = MatchesAny(presentedHash, _adminKeyHashes);
 
-        if (!matched)
+        if (!matchedEveryday && !matchedAdmin)
             return Task.FromResult(AuthenticateResult.Fail("The presented API key is not valid."));
 
-        var identity = new ClaimsIdentity(ApiKeyAuthentication.SchemeName);
+        var claims = matchedAdmin
+            ? new[] { new Claim(ApiKeyAuthentication.AdminClaimType, ApiKeyAuthentication.AdminClaimValue) }
+            : [];
+        var identity = new ClaimsIdentity(claims, ApiKeyAuthentication.SchemeName);
         var ticket = new AuthenticationTicket(new ClaimsPrincipal(identity), Scheme.Name);
         return Task.FromResult(AuthenticateResult.Success(ticket));
+    }
+
+    private static bool MatchesAny(byte[] presentedHash, byte[][] keyHashes)
+    {
+        var matched = false;
+        foreach (var hash in keyHashes)
+            matched |= CryptographicOperations.FixedTimeEquals(presentedHash, hash);
+        return matched;
     }
 }

@@ -31,6 +31,9 @@ public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> opti
     /// <summary>Per-agent system instructions, seeded from code defaults (ADR-0008).</summary>
     public DbSet<AgentInstruction> AgentInstructions => Set<AgentInstruction>();
 
+    /// <summary>The append-only audit of GDPR erasures — the one thing an erasure leaves behind.</summary>
+    public DbSet<ErasureLogEntry> ErasureLog => Set<ErasureLogEntry>();
+
     /// <inheritdoc />
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -89,6 +92,21 @@ public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> opti
             entity.Property(a => a.Instructions).HasColumnName("instructions");
             entity.Property(a => a.Version).HasColumnName("version");
             entity.Property(a => a.UpdatedAt).HasColumnName("updated_at");
+        });
+
+        modelBuilder.Entity<ErasureLogEntry>(entity =>
+        {
+            entity.ToTable("erasure_log");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.PatientId).HasColumnName("patient_id");
+            entity.Property(e => e.ErasedBy).HasColumnName("erased_by");
+            entity.Property(e => e.ErasedAt).HasColumnName("erased_at");
+            entity.Property(e => e.IngestionsErased).HasColumnName("ingestions_erased");
+            entity.Property(e => e.ChunksErased).HasColumnName("chunks_erased");
+
+            // A compliance query asks what became of one patient.
+            entity.HasIndex(e => e.PatientId);
         });
 
         modelBuilder.Entity<Chunk>(entity =>

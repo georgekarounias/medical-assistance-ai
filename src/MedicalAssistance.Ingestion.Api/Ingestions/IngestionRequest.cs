@@ -137,6 +137,25 @@ public sealed record IngestionAccepted
     public bool Duplicate { get; init; }
 }
 
+/// <summary>Confirmation that a patient's data was erased, and how much was removed.</summary>
+public sealed record PatientDataErased
+{
+    /// <summary>The patient whose data was erased.</summary>
+    public required string PatientId { get; init; }
+
+    /// <summary>Who performed the erasure — echoed back, and recorded in the erasure log.</summary>
+    public required string ErasedBy { get; init; }
+
+    /// <summary>When it ran, in UTC.</summary>
+    public required DateTimeOffset ErasedAt { get; init; }
+
+    /// <summary>How many Ingestion rows were removed (zero if the service held nothing for the patient).</summary>
+    public required int IngestionsErased { get; init; }
+
+    /// <summary>How many Chunks were removed.</summary>
+    public required int ChunksErased { get; init; }
+}
+
 /// <summary>Confirmation that a Document was un-ingested, and the tombstone it left.</summary>
 public sealed record DocumentUnIngested
 {

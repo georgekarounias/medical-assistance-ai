@@ -93,6 +93,34 @@ public class IngestionRecord
 }
 
 /// <summary>
+/// The record that a patient's data was erased. It is what remains after GDPR
+/// Erasure has removed everything else — chunks, ingestion rows, and the Deleted
+/// tombstones un-ingest leaves — so the act of erasing is itself accountable
+/// even though its subject is gone. Nothing in the service ever deletes from
+/// this table; a second erasure of the same patient appends another row.
+/// </summary>
+public class ErasureLogEntry
+{
+    /// <summary>Primary key.</summary>
+    public Guid Id { get; set; }
+
+    /// <summary>The patient whose data was erased.</summary>
+    public string PatientId { get; set; } = null!;
+
+    /// <summary>Who performed the erasure — named by the trusted backend, since this service has no user identity.</summary>
+    public string ErasedBy { get; set; } = null!;
+
+    /// <summary>When the erasure ran, in UTC.</summary>
+    public DateTimeOffset ErasedAt { get; set; }
+
+    /// <summary>How many Ingestion rows were removed — evidence of what the erasure took out.</summary>
+    public int IngestionsErased { get; set; }
+
+    /// <summary>How many Chunks were removed.</summary>
+    public int ChunksErased { get; set; }
+}
+
+/// <summary>
 /// One retrievable unit in the vector store: verbatim text plus its embedding,
 /// carrying the shared metadata spine that makes cross-document retrieval and
 /// cascade deletion possible.
