@@ -1,3 +1,4 @@
+using System.Data;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -511,30 +512,28 @@ public sealed class IngestionStore(IngestionDbContext db)
     /// ingestions because a chunk points at its ingestion; the erasure_log row
     /// references neither, so it survives both.
     /// </summary>
-    public async Task<(int IngestionsErased, int ChunksErased)> ErasePatientDataAsync(
-        string patientId, string erasedBy, CancellationToken ct = default)
-    {
-        await using var transaction = await db.Database.BeginTransactionAsync(ct);
-
-        // Chunks first: each carries a foreign key to its ingestion, so the
-        // ingestion rows cannot go until nothing points at them.
-        var chunksErased = await db.Chunks.Where(c => c.PatientId == patientId).ExecuteDeleteAsync(ct);
-        var ingestionsErased = await db.Ingestions.Where(i => i.PatientId == patientId).ExecuteDeleteAsync(ct);
-
-        db.ErasureLog.Add(new ErasureLogEntry
+    public Task<(int IngestionsErased, int ChunksErased)> ErasePatientDataAsync(
+        string patientId, string erasedBy, CancellationToken ct = default) =>
+        InTransactionAsync(async innerCt =>
         {
-            Id = Guid.NewGuid(),
-            PatientId = patientId,
-            ErasedBy = erasedBy,
-            ErasedAt = DateTimeOffset.UtcNow,
-            IngestionsErased = ingestionsErased,
-            ChunksErased = chunksErased,
-        });
-        await db.SaveChangesAsync(ct);
+            // Chunks first: each carries a foreign key to its ingestion, so the
+            // ingestion rows cannot go until nothing points at them.
+            var chunksErased = await db.Chunks.Where(c => c.PatientId == patientId).ExecuteDeleteAsync(innerCt);
+            var ingestionsErased = await db.Ingestions.Where(i => i.PatientId == patientId).ExecuteDeleteAsync(innerCt);
 
-        await transaction.CommitAsync(ct);
-        return (ingestionsErased, chunksErased);
-    }
+            db.ErasureLog.Add(new ErasureLogEntry
+            {
+                Id = Guid.NewGuid(),
+                PatientId = patientId,
+                ErasedBy = erasedBy,
+                ErasedAt = DateTimeOffset.UtcNow,
+                IngestionsErased = ingestionsErased,
+                ChunksErased = chunksErased,
+            });
+            await db.SaveChangesAsync(innerCt);
+
+            return (ingestionsErased, chunksErased);
+        }, ct);
 
     /// <summary>
     /// Un-ingests a Document: in one transaction its chunks are deleted, its raw
@@ -553,52 +552,48 @@ public sealed class IngestionStore(IngestionDbContext db)
     /// be worse than the mistake un-ingest exists to correct. Erasing even the
     /// tombstone is GDPR Erasure's job, guarded by its own admin secret.
     /// </summary>
-    public async Task<(UnIngestOutcome Outcome, DateTimeOffset? DeletedAt)> TryUnIngestAsync(
-        string documentId, string removedBy, CancellationToken ct = default)
-    {
-        await using var transaction = await db.Database.BeginTransactionAsync(ct);
-
-        // In-flight is checked first and across every row for the document: a
-        // correction can be Queued while the previous version is still Completed,
-        // and removing one out from under the other mid-run is the race this
-        // avoids.
-        var inFlight = await db.Ingestions
-            .Where(i => i.DocumentId == documentId && (i.Status == "Queued" || i.Status == "Processing"))
-            .AnyAsync(ct);
-        if (inFlight)
+    public Task<(UnIngestOutcome Outcome, DateTimeOffset? DeletedAt)> TryUnIngestAsync(
+        string documentId, string removedBy, CancellationToken ct = default) =>
+        InTransactionAsync(async innerCt =>
         {
-            await transaction.RollbackAsync(ct);
-            return (UnIngestOutcome.InFlight, null);
-        }
+            // In-flight is checked first and across every row for the document: a
+            // correction can be Queued while the previous version is still
+            // Completed, and removing one out from under the other mid-run is the
+            // race this avoids. The check writes nothing, so returning here just
+            // ends an empty transaction.
+            var inFlight = await db.Ingestions
+                .Where(i => i.DocumentId == documentId && (i.Status == "Queued" || i.Status == "Processing"))
+                .AnyAsync(innerCt);
+            if (inFlight)
+                return (UnIngestOutcome.InFlight, (DateTimeOffset?)null);
 
-        // Guarded on Completed, so two deletes racing settle to one, and a
-        // document with no live version is left untouched rather than tombstoned
-        // twice. There is at most one Completed row per document — supersede
-        // demotes the old one as the new one lands — so this flips exactly it.
-        var deletedAt = DateTimeOffset.UtcNow;
-        var tombstoned = await db.Ingestions
-            .Where(i => i.DocumentId == documentId && i.Status == "Completed")
-            .ExecuteUpdateAsync(
-                setters => setters
-                    .SetProperty(i => i.Status, "Deleted")
-                    .SetProperty(i => i.DeletedBy, removedBy)
-                    .SetProperty(i => i.DeletedAt, deletedAt)
-                    .SetProperty(i => i.Payload, (string?)null)
-                    .SetProperty(i => i.UpdatedAt, deletedAt),
-                ct);
-        if (tombstoned == 0)
-        {
-            await transaction.RollbackAsync(ct);
-            return (UnIngestOutcome.NotFound, null);
-        }
+            // Guarded on Completed, so two deletes racing settle to one, and a
+            // document with no live version is left untouched rather than
+            // tombstoned twice. There is at most one Completed row per document —
+            // supersede demotes the old one as the new one lands — so this flips
+            // exactly it. A no-match changes nothing, so the early return again
+            // commits an empty transaction.
+            var deletedAt = DateTimeOffset.UtcNow;
+            var tombstoned = await db.Ingestions
+                .Where(i => i.DocumentId == documentId && i.Status == "Completed")
+                .ExecuteUpdateAsync(
+                    setters => setters
+                        .SetProperty(i => i.Status, "Deleted")
+                        .SetProperty(i => i.DeletedBy, removedBy)
+                        .SetProperty(i => i.DeletedAt, deletedAt)
+                        .SetProperty(i => i.Payload, (string?)null)
+                        .SetProperty(i => i.UpdatedAt, deletedAt),
+                    innerCt);
+            if (tombstoned == 0)
+                return (UnIngestOutcome.NotFound, null);
 
-        // The chunks carry the same assembled id, so this removes exactly the
-        // live version's chunks and no sibling's.
-        await db.Chunks.Where(c => c.DocumentId == documentId).ExecuteDeleteAsync(ct);
+            // The chunks carry the same assembled id, so this removes exactly the
+            // live version's chunks and no sibling's — atomically with the flip
+            // above.
+            await db.Chunks.Where(c => c.DocumentId == documentId).ExecuteDeleteAsync(innerCt);
 
-        await transaction.CommitAsync(ct);
-        return (UnIngestOutcome.Deleted, deletedAt);
-    }
+            return (UnIngestOutcome.Deleted, deletedAt);
+        }, ct);
 
     /// <summary>
     /// The atomic commit of an Ingestion: any superseded version of the document
@@ -609,42 +604,39 @@ public sealed class IngestionStore(IngestionDbContext db)
     /// the new one: it can never see both versions of a transcript at once, and
     /// never sees the document missing in between.
     /// </summary>
-    public async Task CompleteWithChunksAsync(
+    public Task CompleteWithChunksAsync(
         Guid ingestionId, string documentId, IngestionRequest request, IReadOnlyList<ChunkToStore> chunks,
-        int instructionVersion, string chatModel, CancellationToken ct = default)
-    {
-        await using var transaction = await db.Database.BeginTransactionAsync(ct);
-
-        var ingestion = await db.Ingestions.FirstAsync(i => i.Id == ingestionId, ct);
-        await SupersedePreviousVersionAsync(ingestionId, documentId, request, ct);
-
-        db.Chunks.AddRange(chunks.Select(chunk => new Chunk
+        int instructionVersion, string chatModel, CancellationToken ct = default) =>
+        InTransactionAsync(async innerCt =>
         {
-            Id = Guid.NewGuid(),
-            IngestionId = ingestionId,
-            ChunkIndex = chunk.Index,
-            DocumentId = documentId,
-            DocumentType = request.DocumentType,
-            PatientId = request.PatientId,
-            DoctorId = request.DoctorId,
-            SessionId = request.SessionId,
-            DocumentDate = request.SessionDate,
-            Language = request.Language,
-            ChunkKind = chunk.Kind,
-            SourceRef = chunk.SourceRefJson,
-            VerbatimText = chunk.VerbatimText,
-            ContextBlurb = chunk.ContextBlurb,
-            Embedding = chunk.Embedding,
-        }));
+            var ingestion = await db.Ingestions.FirstAsync(i => i.Id == ingestionId, innerCt);
+            await SupersedePreviousVersionAsync(ingestionId, documentId, request, innerCt);
 
-        ingestion.Status = "Completed";
-        ingestion.InstructionVersion = instructionVersion;
-        ingestion.ChatModel = chatModel;
-        ingestion.UpdatedAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync(ct);
+            db.Chunks.AddRange(chunks.Select(chunk => new Chunk
+            {
+                Id = Guid.NewGuid(),
+                IngestionId = ingestionId,
+                ChunkIndex = chunk.Index,
+                DocumentId = documentId,
+                DocumentType = request.DocumentType,
+                PatientId = request.PatientId,
+                DoctorId = request.DoctorId,
+                SessionId = request.SessionId,
+                DocumentDate = request.SessionDate,
+                Language = request.Language,
+                ChunkKind = chunk.Kind,
+                SourceRef = chunk.SourceRefJson,
+                VerbatimText = chunk.VerbatimText,
+                ContextBlurb = chunk.ContextBlurb,
+                Embedding = chunk.Embedding,
+            }));
 
-        await transaction.CommitAsync(ct);
-    }
+            ingestion.Status = "Completed";
+            ingestion.InstructionVersion = instructionVersion;
+            ingestion.ChatModel = chatModel;
+            ingestion.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(innerCt);
+        }, ct);
 
     /// <summary>
     /// Clears out the version of this Document that is being replaced: its chunks
@@ -718,4 +710,34 @@ public sealed class IngestionStore(IngestionDbContext db)
             .SetProperty(i => i.ErrorMessage, errorMessage)
             .SetProperty(i => i.UpdatedAt, DateTimeOffset.UtcNow), ct);
     }
+
+    /// <summary>
+    /// The one place a write becomes atomic. Every operation that changes more
+    /// than one row — the supersede-and-insert commit, un-ingest, erasure — runs
+    /// its body here, so beginning, committing, rolling back, and choosing the
+    /// isolation level happen in a single spot instead of being re-established,
+    /// and left to diverge, in each method. The body either returns and the whole
+    /// of it commits, or it throws and disposing the transaction rolls all of it
+    /// back: nothing a body wrote is ever left half-applied, and a body that
+    /// returns early having written nothing simply commits an empty transaction.
+    ///
+    /// Read Committed is set explicitly rather than inherited from the connection
+    /// default, so the isolation the whole service's writes run under is stated in
+    /// one readable place. Strengthening it — to close a write-skew such as B18 —
+    /// is a change to this line, and would want an execution strategy wrapped
+    /// around the body to retry the serialization failures a stricter level
+    /// introduces. (The provider is on its non-retrying default today, which is
+    /// why the body is not required to be idempotent.)
+    /// </summary>
+    private async Task<T> InTransactionAsync<T>(Func<CancellationToken, Task<T>> body, CancellationToken ct)
+    {
+        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
+        var result = await body(ct);
+        await transaction.CommitAsync(ct);
+        return result;
+    }
+
+    /// <inheritdoc cref="InTransactionAsync{T}" />
+    private Task InTransactionAsync(Func<CancellationToken, Task> body, CancellationToken ct) =>
+        InTransactionAsync<object?>(async innerCt => { await body(innerCt); return null; }, ct);
 }

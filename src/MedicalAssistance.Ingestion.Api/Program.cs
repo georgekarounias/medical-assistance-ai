@@ -150,26 +150,34 @@ await using (var scope = app.Services.CreateAsyncScope())
         // The vector extension may have been created by that migration, after
         // this pool's type catalog was loaded — reload so 'vector' is usable.
         await connection.ReloadTypesAsync();
+
+        // Seed missing agent instructions from code defaults under the same lock
+        // as the migration, and for the same reason: seeding writes rows keyed by
+        // agent name, so two instances deploying at once against a fresh database
+        // would both read it empty and both insert the defaults, and the second
+        // would fail on the duplicate key. Serializing it here means the instance
+        // that gets the lock second sees the first's seed and skips it.
+        var seededNames = await db.AgentInstructions.Select(a => a.Name).ToListAsync();
+        foreach (var (name, instructions) in AgentInstructionDefaults.Defaults)
+        {
+            if (!seededNames.Contains(name))
+            {
+                db.AgentInstructions.Add(new AgentInstruction
+                {
+                    Name = name,
+                    Instructions = instructions,
+                    Version = 1,
+                    UpdatedAt = DateTimeOffset.UtcNow,
+                });
+            }
+        }
+        await db.SaveChangesAsync();
     }
     await connection.CloseAsync();
 
-    // Seed missing agent instructions from code defaults, then load them all
-    // into the singleton provider — read once, restart to apply (ADR-0008).
-    var seededNames = await db.AgentInstructions.Select(a => a.Name).ToListAsync();
-    foreach (var (name, instructions) in AgentInstructionDefaults.Defaults)
-    {
-        if (!seededNames.Contains(name))
-        {
-            db.AgentInstructions.Add(new AgentInstruction
-            {
-                Name = name,
-                Instructions = instructions,
-                Version = 1,
-                UpdatedAt = DateTimeOffset.UtcNow,
-            });
-        }
-    }
-    await db.SaveChangesAsync();
+    // Load the instructions into the singleton provider — read once, restart to
+    // apply (ADR-0008). A read into this instance's own memory, so it needs no
+    // lock and each instance does it independently.
     app.Services.GetRequiredService<AgentInstructionProvider>()
         .Load(await db.AgentInstructions.AsNoTracking().ToListAsync());
 }
