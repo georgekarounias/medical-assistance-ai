@@ -267,8 +267,9 @@ public class DuplicateSubmissionTests(IngestionApiFixture fixture) : IClassFixtu
     }
 
     /// <summary>
-    /// The chunk texts a document currently holds. Scoped by patient as well as
-    /// document id, because the tests here deliberately share a session id.
+    /// The chunk texts a document currently holds. The patient is inside the
+    /// document id now, which is what keeps these tests apart despite their
+    /// deliberately shared session id; the extra predicate is belt and braces.
     /// </summary>
     private async Task<List<string>> ReadDocumentChunksAsync(string patientId, int sequenceNumber)
     {
@@ -277,7 +278,7 @@ public class DuplicateSubmissionTests(IngestionApiFixture fixture) : IClassFixtu
         await using var command = new NpgsqlCommand(
             "SELECT verbatim_text FROM chunks WHERE document_id = $1 AND patient_id = $2 ORDER BY chunk_index",
             connection);
-        command.Parameters.AddWithValue($"sess-dedup#{sequenceNumber}");
+        command.Parameters.AddWithValue($"doc-1#{patientId}#sess-dedup#{sequenceNumber}");
         command.Parameters.AddWithValue(patientId);
 
         var texts = new List<string>();

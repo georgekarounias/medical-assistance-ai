@@ -156,7 +156,7 @@ public class CorrectionTests(IngestionApiFixture fixture) : IClassFixture<Ingest
         await connection.OpenAsync();
         await using var command = new NpgsqlCommand(
             "SELECT verbatim_text FROM chunks WHERE document_id = $1 ORDER BY chunk_index", connection);
-        command.Parameters.AddWithValue($"sess-{patientId}#{sequenceNumber}");
+        command.Parameters.AddWithValue($"doc-1#{patientId}#sess-{patientId}#{sequenceNumber}");
 
         var texts = new List<string>();
         await using var reader = await command.ExecuteReaderAsync();

@@ -1,6 +1,4 @@
-using System.Threading.Channels;
 using MedicalAssistance.Ingestion.Api.Ingestions;
-using MedicalAssistance.Ingestion.Api.Realtime;
 using Microsoft.AspNetCore.Mvc;
 
 namespace MedicalAssistance.Ingestion.Api.Controllers;
@@ -13,8 +11,7 @@ namespace MedicalAssistance.Ingestion.Api.Controllers;
 [ApiController]
 [Route("ingestions")]
 [Produces("application/json")]
-public sealed class IngestionsController(
-    IngestionStore store, Channel<Guid> queue, IngestionStatusPublisher statusPublisher) : ControllerBase
+public sealed class IngestionsController(IngestionStore store, IngestionQueue queue) : ControllerBase
 {
     /// <summary>Submits a clinical Document for ingestion.</summary>
     /// <remarks>
@@ -97,7 +94,7 @@ public sealed class IngestionsController(
                     break;
 
                 if (outcome == RetryOutcome.Requeued)
-                    await queue.Writer.WriteAsync(failed.Id, ct);
+                    await queue.EnqueueAsync(failed.Id, ct);
                 return Accepted(LocationOf(failed.Id), new IngestionAccepted { IngestionId = failed.Id });
         }
 
@@ -115,9 +112,7 @@ public sealed class IngestionsController(
         }
 
         var ingestionId = await store.CreateQueuedAsync(request, ct);
-        await queue.Writer.WriteAsync(ingestionId, ct);
-        await statusPublisher.PublishAsync(
-            ingestionId, request.DoctorId, request.PatientId, IngestionStages.Queued, ct: ct);
+        await queue.EnqueueAsync(ingestionId, ct);
         return Accepted(LocationOf(ingestionId), new IngestionAccepted { IngestionId = ingestionId });
     }
 
@@ -217,7 +212,7 @@ public sealed class IngestionsController(
                             "one. Submit the content again if it is what the record should hold.");
         }
 
-        await queue.Writer.WriteAsync(id, ct);
+        await queue.EnqueueAsync(id, ct);
         return Accepted(LocationOf(id), new IngestionAccepted { IngestionId = id });
     }
 

@@ -60,7 +60,7 @@ public class ContinuationTests(IngestionApiFixture fixture) : IClassFixture<Inge
 
         Assert.Equal(6, hits.Count); // both parts, three chunks each
         Assert.Equal(
-            [$"sess-{patientId}#1", $"sess-{patientId}#2"],
+            [$"doc-1#{patientId}#sess-{patientId}#1", $"doc-1#{patientId}#sess-{patientId}#2"],
             hits.Select(hit => hit.DocumentId).Distinct().Order().ToArray());
         Assert.Contains(hits, hit => hit.Text.Contains("three months"));
         Assert.Contains(hits, hit => hit.Text.Contains("one glass"));

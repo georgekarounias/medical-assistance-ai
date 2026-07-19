@@ -94,6 +94,7 @@ builder.Services.TryAddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(
 builder.Services.AddSingleton<AgentInstructionProvider>();
 builder.Services.AddSingleton<IngestionStatusPublisher>();
 builder.Services.AddScoped<IngestionStore>();
+builder.Services.AddScoped<IngestionQueue>();
 builder.Services.AddScoped<TranscriptIngestionStrategy>();
 builder.Services.AddSingleton(Channel.CreateUnbounded<Guid>());
 builder.Services.AddHostedService<IngestionWorker>();
@@ -145,10 +146,10 @@ await using (var scope = app.Services.CreateAsyncScope())
     // Whatever the last process was working on when it stopped is queued again.
     // A crash or a deploy must not turn an accepted upload into a progress bar
     // that never moves; the attempt cap is what keeps this from looping.
-    var queue = app.Services.GetRequiredService<Channel<Guid>>();
+    var queue = scope.ServiceProvider.GetRequiredService<IngestionQueue>();
     var unfinished = await scope.ServiceProvider.GetRequiredService<IngestionStore>().FindUnfinishedAsync();
     foreach (var ingestionId in unfinished)
-        await queue.Writer.WriteAsync(ingestionId);
+        await queue.EnqueueAsync(ingestionId);
 
     if (unfinished.Count > 0)
         app.Logger.LogInformation("Requeued {Count} unfinished ingestions after startup", unfinished.Count);

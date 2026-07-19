@@ -213,7 +213,7 @@ public class RetryEndpointTests(IngestionApiFixture fixture) : IClassFixture<Ing
         await connection.OpenAsync();
         await using var command = new NpgsqlCommand(
             "SELECT verbatim_text FROM chunks WHERE document_id = $1 ORDER BY chunk_index", connection);
-        command.Parameters.AddWithValue($"sess-{patientId}#1");
+        command.Parameters.AddWithValue($"doc-1#{patientId}#sess-{patientId}#1");
 
         var texts = new List<string>();
         await using var reader = await command.ExecuteReaderAsync();

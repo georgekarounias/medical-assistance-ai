@@ -7,15 +7,31 @@ namespace MedicalAssistance.Ingestion.Api.Ingestions;
 /// It lives in one place because those features have to agree exactly. A list
 /// that names documents the delete endpoint cannot find would be worse than no
 /// list at all.
+///
+/// A transcript is keyed by doctor, patient, session and sequence number
+/// together. Those four are what make a document unique, and they are carried
+/// in the id rather than merely alongside it because the id travels alone:
+/// <c>DELETE /documents/{documentId}</c> receives nothing else, so an id naming
+/// only a session would be safe to act on only if session ids were known to be
+/// unique across patients — and they are not known to be. Carrying the whole key
+/// makes the identifier answer that question by itself, instead of depending on
+/// a property of the backend nobody has confirmed.
+///
+/// The same key decides what a Correction replaces, so every query that asks
+/// "is this the same document?" has to match on all four. Those live in
+/// <see cref="IngestionStore" />: in-flight detection, duplicate detection, the
+/// staleness check on rerun, and supersede.
 /// </summary>
 public static class DocumentIdentity
 {
     /// <summary>The Document id for a submission of the given Document Type.</summary>
-    public static string For(string documentType, string? sessionId, int? sequenceNumber) => documentType switch
-    {
-        DocumentTypes.SessionTranscript => $"{sessionId}#{sequenceNumber}",
-        _ => throw new NotSupportedException($"No document identity is defined for '{documentType}'."),
-    };
+    public static string For(
+        string documentType, string doctorId, string patientId, string? sessionId, int? sequenceNumber) =>
+        documentType switch
+        {
+            DocumentTypes.SessionTranscript => $"{doctorId}#{patientId}#{sessionId}#{sequenceNumber}",
+            _ => throw new NotSupportedException($"No document identity is defined for '{documentType}'."),
+        };
 }
 
 /// <summary>

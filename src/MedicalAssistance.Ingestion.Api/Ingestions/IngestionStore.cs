@@ -21,6 +21,14 @@ public sealed record ChunkToStore(
     string? SourceRefJson,
     Vector Embedding);
 
+/// <summary>
+/// Who an Ingestion belongs to — the routing information every status event
+/// carries, because this service has no idea which devices are online.
+/// </summary>
+/// <param name="DoctorId">The doctor who submitted the document.</param>
+/// <param name="PatientId">The patient the document is about.</param>
+public sealed record IngestionIdentity(string DoctorId, string PatientId);
+
 /// <summary>What came of asking for an Ingestion to be rerun.</summary>
 public enum RetryOutcome
 {
@@ -86,6 +94,7 @@ public sealed class IngestionStore(IngestionDbContext db)
         return db.Ingestions.AsNoTracking()
             .Where(i => (i.Status == "Queued" || i.Status == "Processing")
                         && ((i.DocumentType == request.DocumentType
+                             && i.DoctorId == request.DoctorId
                              && i.PatientId == request.PatientId
                              && i.SessionId == request.SessionId
                              && i.SequenceNumber == request.SequenceNumber)
@@ -100,12 +109,19 @@ public sealed class IngestionStore(IngestionDbContext db)
     /// submitted content is byte-for-byte identical, or null when this content
     /// has never been submitted for this identity. Same identity with different
     /// content is a Correction, not a duplicate, and is not reported here.
+    ///
+    /// The doctor and patient are matched explicitly, as part of the document
+    /// key. The hash covers them too, so this was already correct without the
+    /// predicates — but only by an argument someone has to reconstruct, and a
+    /// document key is worth stating outright.
     /// </summary>
     public Task<IdenticalIngestion?> FindIdenticalAsync(IngestionRequest request, CancellationToken ct = default)
     {
         var (_, contentHash) = SerializeAndHash(request);
         return db.Ingestions.AsNoTracking()
             .Where(i => i.DocumentType == request.DocumentType
+                        && i.DoctorId == request.DoctorId
+                        && i.PatientId == request.PatientId
                         && i.SessionId == request.SessionId
                         && i.SequenceNumber == request.SequenceNumber
                         && i.ContentHash == contentHash)
@@ -164,6 +180,7 @@ public sealed class IngestionStore(IngestionDbContext db)
                             && newer.Status == "Completed"
                             && newer.CreatedAt > i.CreatedAt
                             && newer.DocumentType == i.DocumentType
+                            && newer.DoctorId == i.DoctorId
                             && newer.PatientId == i.PatientId
                             && newer.SessionId == i.SessionId
                             && newer.SequenceNumber == i.SequenceNumber))
@@ -216,6 +233,18 @@ public sealed class IngestionStore(IngestionDbContext db)
         await db.SaveChangesAsync(ct);
         return record.Id;
     }
+
+    /// <summary>
+    /// The doctor and patient an Ingestion belongs to, or null if the id is
+    /// unknown. Read from the record's own columns rather than the stored
+    /// payload, which carries the entire transcript and would be a wasteful
+    /// thing to deserialize for two strings.
+    /// </summary>
+    public Task<IngestionIdentity?> GetIdentityAsync(Guid id, CancellationToken ct = default) =>
+        db.Ingestions.AsNoTracking()
+            .Where(i => i.Id == id)
+            .Select(i => new IngestionIdentity(i.DoctorId, i.PatientId))
+            .FirstOrDefaultAsync(ct)!;
 
     /// <summary>Returns the lifecycle state of one Ingestion, or null if the id is unknown.</summary>
     public Task<IngestionStatus?> GetStatusAsync(Guid id, CancellationToken ct = default) =>
@@ -273,18 +302,23 @@ public sealed class IngestionStore(IngestionDbContext db)
             .OrderByDescending(i => i.UpdatedAt)
             .Select(i => new
             {
-                i.Id, i.DocumentType, i.SessionId, i.SequenceNumber,
+                i.Id, i.DocumentType, i.DoctorId, i.SessionId, i.SequenceNumber,
                 i.DocumentDate, i.Status, i.ErrorMessage, i.UpdatedAt,
             })
             .ToListAsync(ct);
 
         // Bounded by one patient's care history, so collapsing to the latest per
         // document runs here rather than as a window function nobody can read.
+        // The grouping is the document key minus the patient, which this query
+        // already fixes — drop the doctor from it and two doctors' transcripts
+        // of the same session would collapse into one row that names whichever
+        // was touched last.
         return ingestions
-            .DistinctBy(i => (i.DocumentType, i.SessionId, i.SequenceNumber))
+            .DistinctBy(i => (i.DocumentType, i.DoctorId, i.SessionId, i.SequenceNumber))
             .Select(i => new PatientDocument
             {
-                DocumentId = DocumentIdentity.For(i.DocumentType, i.SessionId, i.SequenceNumber),
+                DocumentId = DocumentIdentity.For(
+                    i.DocumentType, i.DoctorId, patientId, i.SessionId, i.SequenceNumber),
                 DocumentType = i.DocumentType,
                 SessionId = i.SessionId,
                 SequenceNumber = i.SequenceNumber,
@@ -405,8 +439,10 @@ public sealed class IngestionStore(IngestionDbContext db)
     private async Task SupersedePreviousVersionAsync(
         Guid ingestionId, string documentId, IngestionRequest request, CancellationToken ct)
     {
-        // Scoped by patient as well as document id: this deletes clinical data,
-        // so it must not depend on session ids being unique across patients.
+        // The patient is inside documentId now, so this predicate is redundant.
+        // It stays because the statement deletes clinical data: if an id is ever
+        // built wrongly, the blast radius is confined to the patient it names
+        // rather than reaching whoever else happens to match.
         await db.Chunks
             .Where(c => c.DocumentId == documentId && c.PatientId == request.PatientId)
             .ExecuteDeleteAsync(ct);
@@ -415,6 +451,7 @@ public sealed class IngestionStore(IngestionDbContext db)
             .Where(i => i.Id != ingestionId
                         && i.Status == "Completed"
                         && i.DocumentType == request.DocumentType
+                        && i.DoctorId == request.DoctorId
                         && i.PatientId == request.PatientId
                         && i.SessionId == request.SessionId
                         && i.SequenceNumber == request.SequenceNumber)

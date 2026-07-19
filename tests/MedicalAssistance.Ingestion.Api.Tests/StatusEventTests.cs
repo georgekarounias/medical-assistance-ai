@@ -87,6 +87,52 @@ public class StatusEventTests(IngestionApiFixture fixture) : IClassFixture<Inges
     }
 
     [Fact]
+    public async Task A_rerun_asked_for_by_the_retry_endpoint_is_announced_as_Queued()
+    {
+        var received = new ConcurrentQueue<IngestionStatusEvent>();
+        await using var connection = await ConnectAsync(received);
+
+        // No scripted response, so the first run fails and there is something
+        // to recover.
+        var client = fixture.Factory.CreateClient();
+        var ingestionId = await PostAsync(client, "pat-rerun-announced");
+        await WaitForTerminalEventAsync(received, ingestionId);
+        received.Clear();
+
+        fixture.ChatClient.EnqueueResponse(ValidPlan);
+        await client.PostAsync($"/ingestions/{ingestionId}/retry", null);
+
+        // Recovery is the moment a doctor is most likely to be watching, so a
+        // rerun has to announce itself like any other work — otherwise the bar
+        // sits still until Chunking and the retry looks like it did nothing.
+        var events = await WaitForTerminalEventAsync(received, ingestionId);
+        Assert.Equal(IngestionStages.Queued, events[0].Stage);
+        Assert.Equal("doc-watching", events[0].DoctorId);
+        Assert.Equal("pat-rerun-announced", events[0].PatientId);
+    }
+
+    [Fact]
+    public async Task A_rerun_asked_for_by_resubmitting_the_content_is_announced_as_Queued()
+    {
+        var received = new ConcurrentQueue<IngestionStatusEvent>();
+        await using var connection = await ConnectAsync(received);
+
+        var client = fixture.Factory.CreateClient();
+        var ingestionId = await PostAsync(client, "pat-resubmit-announced");
+        await WaitForTerminalEventAsync(received, ingestionId);
+        received.Clear();
+
+        // The other way to ask for the same rerun: send the identical content
+        // again. It reuses the failed ingestion, so it must announce it too.
+        fixture.ChatClient.EnqueueResponse(ValidPlan);
+        await client.PostAsJsonAsync("/ingestions", Payload("pat-resubmit-announced"));
+
+        var events = await WaitForTerminalEventAsync(received, ingestionId);
+        Assert.Equal(IngestionStages.Queued, events[0].Stage);
+        Assert.Equal("pat-resubmit-announced", events[0].PatientId);
+    }
+
+    [Fact]
     public async Task An_ingestion_that_nobody_is_listening_to_still_completes()
     {
         var client = fixture.Factory.CreateClient();
@@ -143,17 +189,19 @@ public class StatusEventTests(IngestionApiFixture fixture) : IClassFixture<Inges
 
     private static async Task<Guid> PostAsync(HttpClient client, string patientId)
     {
-        var response = await client.PostAsJsonAsync("/ingestions", new
-        {
-            documentType = "SessionTranscript",
-            doctorId = "doc-watching",
-            patientId,
-            sessionId = $"sess-{patientId}",
-            sequenceNumber = 1,
-            language = "en",
-            transcript = Transcript,
-        });
+        var response = await client.PostAsJsonAsync("/ingestions", Payload(patientId));
         response.EnsureSuccessStatusCode();
         return (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("ingestionId").GetGuid();
     }
+
+    private static object Payload(string patientId) => new
+    {
+        documentType = "SessionTranscript",
+        doctorId = "doc-watching",
+        patientId,
+        sessionId = $"sess-{patientId}",
+        sequenceNumber = 1,
+        language = "en",
+        transcript = Transcript,
+    };
 }

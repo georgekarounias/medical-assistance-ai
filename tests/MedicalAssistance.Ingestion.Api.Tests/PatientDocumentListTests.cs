@@ -49,7 +49,7 @@ public class PatientDocumentListTests(IngestionApiFixture fixture) : IClassFixtu
 
         Assert.Equal(2, documents.Count);
         Assert.Equal(
-            [$"sess-{patientId}#1", $"sess-{patientId}#2"],
+            [$"doc-1#{patientId}#sess-{patientId}#1", $"doc-1#{patientId}#sess-{patientId}#2"],
             documents.Select(d => d.DocumentId).Order().ToArray());
 
         var first = documents.Single(d => d.SequenceNumber == 1);
@@ -77,7 +77,7 @@ public class PatientDocumentListTests(IngestionApiFixture fixture) : IClassFixtu
         // One document, not one row per attempt at it: the superseded version is
         // history, and showing it would suggest the patient has two transcripts.
         var document = Assert.Single(documents);
-        Assert.Equal($"sess-{patientId}#1", document.DocumentId);
+        Assert.Equal($"doc-1#{patientId}#sess-{patientId}#1", document.DocumentId);
         Assert.Equal("Completed", document.Status);
         Assert.Equal(correctionId, document.IngestionId);
     }
@@ -102,6 +102,54 @@ public class PatientDocumentListTests(IngestionApiFixture fixture) : IClassFixtu
     }
 
     [Fact]
+    public async Task Two_patients_filed_under_the_same_session_get_different_document_ids()
+    {
+        var client = fixture.Factory.CreateClient();
+        const string sharedSession = "sess-shared-across-patients";
+
+        // The same session id and sequence number for two different patients.
+        // Harmless if session ids turn out to be globally unique, and a mix-up
+        // of two people's records if they turn out to be unique only within a
+        // patient — which nobody has confirmed.
+        await IngestAsync(client, "pat-collides-a", 1, PartOne, "2026-07-14T09:00:00Z", sharedSession);
+        await IngestAsync(client, "pat-collides-b", 1, PartTwo, "2026-07-14T09:00:00Z", sharedSession);
+
+        var first = Assert.Single(await ListAsync(client, "pat-collides-a"));
+        var second = Assert.Single(await ListAsync(client, "pat-collides-b"));
+
+        // The identifier answers "whose document is this?" by itself. That is
+        // what lets un-ingest take a document id alone and still be safe.
+        Assert.NotEqual(first.DocumentId, second.DocumentId);
+        Assert.StartsWith("doc-1#pat-collides-a#", first.DocumentId);
+        Assert.StartsWith("doc-1#pat-collides-b#", second.DocumentId);
+    }
+
+    [Fact]
+    public async Task Two_doctors_filing_the_same_session_hold_two_separate_documents()
+    {
+        var client = fixture.Factory.CreateClient();
+        const string patientId = "pat-two-doctors";
+        const string sharedSession = "sess-two-doctors";
+
+        // Same patient, same session, same sequence number — filed by two
+        // different doctors. The doctor is part of the document key, so these
+        // are two documents rather than one correcting the other.
+        await IngestAsync(client, patientId, 1, PartOne, "2026-07-15T09:00:00Z", sharedSession, doctorId: "doc-a");
+        await IngestAsync(client, patientId, 1, PartTwo, "2026-07-15T09:00:00Z", sharedSession, doctorId: "doc-b");
+
+        var documents = await ListAsync(client, patientId);
+
+        Assert.Equal(2, documents.Count);
+        Assert.Equal(
+            [$"doc-a#{patientId}#{sharedSession}#1", $"doc-b#{patientId}#{sharedSession}#1"],
+            documents.Select(d => d.DocumentId).Order().ToArray());
+
+        // Both survive: neither superseded the other, so the patient's record
+        // holds both doctors' accounts of the encounter.
+        Assert.All(documents, document => Assert.Equal("Completed", document.Status));
+    }
+
+    [Fact]
     public async Task A_patient_the_system_knows_nothing_about_has_an_empty_list()
     {
         var client = fixture.Factory.CreateClient();
@@ -119,23 +167,26 @@ public class PatientDocumentListTests(IngestionApiFixture fixture) : IClassFixtu
     }
 
     private async Task<Guid> IngestAsync(
-        HttpClient client, string patientId, int sequenceNumber, string transcript, string sessionDate)
+        HttpClient client, string patientId, int sequenceNumber, string transcript, string sessionDate,
+        string? sessionId = null, string doctorId = "doc-1")
     {
         fixture.ChatClient.EnqueueResponse(TwoChunkPlan);
-        var ingestionId = await PostAsync(client, patientId, sequenceNumber, transcript, sessionDate);
+        var ingestionId = await PostAsync(
+            client, patientId, sequenceNumber, transcript, sessionDate, sessionId, doctorId);
         await WaitForStatusAsync(client, ingestionId, "Completed");
         return ingestionId;
     }
 
     private static async Task<Guid> PostAsync(
-        HttpClient client, string patientId, int sequenceNumber, string transcript, string sessionDate)
+        HttpClient client, string patientId, int sequenceNumber, string transcript, string sessionDate,
+        string? sessionId = null, string doctorId = "doc-1")
     {
         var response = await client.PostAsJsonAsync("/ingestions", new
         {
             documentType = "SessionTranscript",
-            doctorId = "doc-1",
+            doctorId,
             patientId,
-            sessionId = $"sess-{patientId}",
+            sessionId = sessionId ?? $"sess-{patientId}",
             sequenceNumber,
             sessionDate,
             language = "en",
