@@ -85,6 +85,38 @@ public class CrashRecoveryTests(IngestionApiFixture fixture) : IClassFixture<Ing
     }
 
     [Fact]
+    public async Task Work_another_instance_is_already_running_is_left_alone()
+    {
+        Guid ingestionId;
+        await using (var accepting = fixture.CreateFactory(new ScriptedChatClient(), workerCount: 0))
+            ingestionId = await PostAsync(accepting, "pat-two-instances");
+
+        // One instance has it and is inside the chat call, holding it there.
+        var busyChat = new ScriptedChatClient();
+        var release = busyChat.EnqueueBlockingResponse(ValidPlan);
+        await using var busy = fixture.CreateFactory(busyChat);
+        _ = busy.Server;
+        await WaitForAttemptsAsync(ingestionId, 1);
+
+        // A second instance starts — a rolling deploy, or a scaled-out replica —
+        // and its startup recovery sees the very same unfinished row. It must
+        // leave it alone: two workers on one document race to write its chunk
+        // set, and the loser's chunks are already committed by then.
+        var idleChat = new ScriptedChatClient();
+        await using var second = fixture.CreateFactory(idleChat);
+        _ = second.Server;
+
+        await Task.Delay(750); // long enough for a second claim to show itself
+        Assert.Empty(idleChat.ReceivedPrompts);
+        Assert.Equal(1, await ReadAttemptsAsync(ingestionId));
+
+        // And the instance that owns it still finishes normally.
+        release();
+        await WaitForStatusAsync(busy.CreateClient(), ingestionId, "Completed");
+        Assert.Equal(3, await CountChunksAsync(ingestionId));
+    }
+
+    [Fact]
     public async Task Resubmitting_a_failed_document_gives_it_a_fresh_set_of_attempts()
     {
         // No scripted response, so the first run fails on its own.

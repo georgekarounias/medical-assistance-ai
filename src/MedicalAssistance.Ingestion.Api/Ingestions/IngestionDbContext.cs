@@ -5,12 +5,23 @@ namespace MedicalAssistance.Ingestion.Api.Ingestions;
 /// <summary>
 /// EF Core context for the single Postgres database that holds both ingestion
 /// state and the vector store (ADR-0001) — one database so a Correction can
-/// supersede chunks and flip status in one transaction. Embedding dimensions
-/// come from configuration (<c>Embeddings:Dimensions</c>).
+/// supersede chunks and flip status in one transaction.
 /// </summary>
-public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> options, IConfiguration configuration)
+public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> options)
     : DbContext(options)
 {
+    /// <summary>
+    /// Width of the stored embedding vectors, and therefore of the
+    /// <c>vector(n)</c> column itself.
+    ///
+    /// A constant rather than a setting: the dimension is part of the schema,
+    /// so once migrations own the schema it cannot vary per environment without
+    /// the two disagreeing. Moving to an embedding model of a different size is
+    /// a migration that alters the column and re-embeds what is stored — not a
+    /// configuration change, because existing vectors do not resize.
+    /// </summary>
+    public const int EmbeddingDimensions = 3072;
+
     /// <summary>Durable Ingestion records (status, content hash, raw payload).</summary>
     public DbSet<IngestionRecord> Ingestions => Set<IngestionRecord>();
 
@@ -24,7 +35,6 @@ public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> opti
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.HasPostgresExtension("vector");
-        var embeddingDimensions = configuration.GetValue("Embeddings:Dimensions", 3072);
 
         modelBuilder.Entity<IngestionRecord>(entity =>
         {
@@ -91,7 +101,8 @@ public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> opti
             entity.Property(c => c.SourceRef).HasColumnName("source_ref").HasColumnType("jsonb");
             entity.Property(c => c.VerbatimText).HasColumnName("verbatim_text");
             entity.Property(c => c.ContextBlurb).HasColumnName("context_blurb");
-            entity.Property(c => c.Embedding).HasColumnName("embedding").HasColumnType($"vector({embeddingDimensions})");
+            entity.Property(c => c.Embedding).HasColumnName("embedding")
+                .HasColumnType($"vector({EmbeddingDimensions})");
             entity.HasOne<IngestionRecord>().WithMany().HasForeignKey(c => c.IngestionId);
             entity.HasIndex(c => c.IngestionId);
         });

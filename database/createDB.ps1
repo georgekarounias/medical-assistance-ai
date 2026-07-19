@@ -1,0 +1,1 @@
+dotnet ef database update --project src/MedicalAssistance.Ingestion.Api --connection "Host=localhost;Port=5433;Database=ai_med;Username=postgres;Password=postgres"

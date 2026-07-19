@@ -1,3 +1,4 @@
+using MedicalAssistance.Ingestion.Api.Ingestions;
 using MedicalAssistance.Ingestion.Api.Security;
 using MedicalAssistance.Ingestion.Api.Tests.Fakes;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -13,7 +14,13 @@ namespace MedicalAssistance.Ingestion.Api.Tests;
 /// </summary>
 public sealed class IngestionApiFixture : IAsyncLifetime
 {
-    public const int EmbeddingDimensions = 8;
+    /// <summary>
+    /// The real schema dimension, not a smaller test-only one: the
+    /// <c>vector(n)</c> width is fixed by the migration, so a fake generator
+    /// producing anything else would be rejected by the column. Tests therefore
+    /// exercise the same schema that ships.
+    /// </summary>
+    public const int EmbeddingDimensions = IngestionDbContext.EmbeddingDimensions;
 
     /// <summary>
     /// Chunk-size guardrail thresholds for tests — deliberately small so a
@@ -58,7 +65,6 @@ public sealed class IngestionApiFixture : IAsyncLifetime
         {
             builder.UseSetting("ConnectionStrings:Postgres", ConnectionString);
             builder.UseSetting("Ingestion:WorkerCount", workerCount.ToString());
-            builder.UseSetting("Embeddings:Dimensions", EmbeddingDimensions.ToString());
             builder.UseSetting("Chunking:MinTokens", MinChunkTokens.ToString());
             builder.UseSetting("Chunking:MaxTokens", MaxChunkTokens.ToString());
             builder.UseSetting("Authentication:ApiKeys:0", ApiKey);

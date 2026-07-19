@@ -11,6 +11,12 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Agents.AI" Version="1.13.0" />
+    <!-- Design-time only (migration scaffolding); pinned to the EF Core version
+         the Npgsql provider brings in, so the test project does not see two. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.4">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
     <PackageReference Include="Microsoft.Extensions.AI" Version="10.7.0" />
     <PackageReference Include="Npgsql" Version="10.0.3" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />

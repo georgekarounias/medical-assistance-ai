@@ -84,6 +84,7 @@ builder.Services.AddAuthorization(options =>
         .Build();
 });
 
+builder.Services.AddSingleton(dataSource);
 builder.Services.AddDbContext<IngestionDbContext>(options =>
     options.UseNpgsql(dataSource, npgsql => npgsql.UseVector()));
 
@@ -102,13 +103,23 @@ var app = builder.Build();
 await using (var scope = app.Services.CreateAsyncScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<IngestionDbContext>();
-    await db.Database.EnsureCreatedAsync();
 
-    // The vector extension may have been created just now, after this pool's
-    // type catalog was loaded — reload so the 'vector' type is usable.
+    // Schema changes arrive as migrations, never as EnsureCreated. EnsureCreated
+    // builds the schema only when the database is absent and silently no-ops
+    // otherwise, so every column and index added after a database was first
+    // created would be missing from it — while every test, running against a
+    // fresh container, stayed green and showed nothing.
     var connection = (NpgsqlConnection)db.Database.GetDbConnection();
     await connection.OpenAsync();
-    await connection.ReloadTypesAsync();
+    await using (await PostgresAdvisoryLock.AcquireAsync(
+        connection, PostgresAdvisoryLock.SchemaMigrationKey))
+    {
+        await db.Database.MigrateAsync();
+
+        // The vector extension may have been created by that migration, after
+        // this pool's type catalog was loaded — reload so 'vector' is usable.
+        await connection.ReloadTypesAsync();
+    }
     await connection.CloseAsync();
 
     // Seed missing agent instructions from code defaults, then load them all

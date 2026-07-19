@@ -1,5 +1,6 @@
 using System.Threading.Channels;
 using MedicalAssistance.Ingestion.Api.Realtime;
+using Npgsql;
 
 namespace MedicalAssistance.Ingestion.Api.Ingestions;
 
@@ -13,10 +14,16 @@ namespace MedicalAssistance.Ingestion.Api.Ingestions;
 /// (<c>Ingestion:MaxAttempts</c>, default 3) is failed instead of run again —
 /// otherwise a document that crashes the process would be handed straight back
 /// to the next startup, forever.
+///
+/// The queue is per-instance and in-memory, but the work it names is shared:
+/// every instance's startup recovery sees every unfinished row, so a rolling
+/// deploy hands the same ingestion to more than one of them. An advisory lock
+/// held for the length of the run is what makes all but one put it back down.
 /// </summary>
 public sealed class IngestionWorker(
     Channel<Guid> queue,
     IServiceScopeFactory scopeFactory,
+    NpgsqlDataSource dataSource,
     IConfiguration configuration,
     ILogger<IngestionWorker> logger) : BackgroundService
 {
@@ -35,6 +42,26 @@ public sealed class IngestionWorker(
         {
             try
             {
+                // Ownership first, and held on its own connection for the whole
+                // run. Whoever gets it is the only instance working this
+                // ingestion; the lock lives in the database session, so if this
+                // process dies the claim dies with it and the next startup is
+                // free to pick the work up.
+                await using var connection = await dataSource.OpenConnectionAsync(ct);
+                await using var ownership = await PostgresAdvisoryLock.TryAcquireAsync(
+                    connection, PostgresAdvisoryLock.KeyFor(ingestionId), ct);
+
+                if (ownership is null)
+                {
+                    // Another instance has it. Not an error, and not something to
+                    // retry: that instance will carry it to a terminal state, and
+                    // if it dies first the row is left unfinished for a later
+                    // startup to find.
+                    logger.LogDebug(
+                        "Ingestion {IngestionId} is already being run by another instance", ingestionId);
+                    continue;
+                }
+
                 await using var scope = scopeFactory.CreateAsyncScope();
                 var store = scope.ServiceProvider.GetRequiredService<IngestionStore>();
 
