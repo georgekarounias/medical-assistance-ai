@@ -293,12 +293,21 @@ public sealed class IngestionStore(IngestionDbContext db)
     /// its most recent Ingestion left it. Superseded versions and earlier failed
     /// attempts collapse into the document they belong to — a doctor counting
     /// rows here is counting transcripts, not uploads.
+    ///
+    /// <paramref name="doctorId" /> narrows the list to one doctor's documents.
+    /// It is a filter and not a permission check: this service does not decide
+    /// who may see what, the backend does (ADR-0007). Left null, the answer is
+    /// the patient's whole record — which is a legitimate thing for the backend
+    /// to ask for, and why this does not insist on a doctor.
     /// </summary>
     public async Task<List<PatientDocument>> ListPatientDocumentsAsync(
-        string patientId, CancellationToken ct = default)
+        string patientId, string? doctorId = null, CancellationToken ct = default)
     {
-        var ingestions = await db.Ingestions.AsNoTracking()
-            .Where(i => i.PatientId == patientId)
+        var query = db.Ingestions.AsNoTracking().Where(i => i.PatientId == patientId);
+        if (!string.IsNullOrWhiteSpace(doctorId))
+            query = query.Where(i => i.DoctorId == doctorId);
+
+        var ingestions = await query
             .OrderByDescending(i => i.UpdatedAt)
             .Select(i => new
             {

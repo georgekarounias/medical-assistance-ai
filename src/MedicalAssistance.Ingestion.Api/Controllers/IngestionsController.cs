@@ -122,7 +122,12 @@ public sealed class IngestionsController(IngestionStore store, IngestionQueue qu
     /// is caught up, which is why status events need no replay: they are hints,
     /// and this is the truth. Ordered by most recent activity first.
     /// </remarks>
-    /// <param name="doctorId">The doctor whose ingestions to list. Required.</param>
+    /// <param name="doctorId">
+    /// The doctor whose ingestions to list. Required — but as a filter, not a
+    /// permission check. This service authenticates its caller (the backend) and
+    /// trusts it to decide which doctor's work it may ask for; there is no user
+    /// identity at this boundary to check the value against (ADR-0007).
+    /// </param>
     /// <param name="active">
     /// <c>true</c> (the default) returns only Queued and Processing ingestions —
     /// what a reconnecting client needs. <c>false</c> returns finished ones too.

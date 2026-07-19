@@ -150,6 +150,28 @@ public class PatientDocumentListTests(IngestionApiFixture fixture) : IClassFixtu
     }
 
     [Fact]
+    public async Task The_list_can_be_narrowed_to_one_doctors_documents()
+    {
+        var client = fixture.Factory.CreateClient();
+        const string patientId = "pat-filtered-by-doctor";
+        const string sharedSession = "sess-filtered";
+
+        await IngestAsync(client, patientId, 1, PartOne, "2026-07-16T09:00:00Z", sharedSession, doctorId: "doc-x");
+        await IngestAsync(client, patientId, 1, PartTwo, "2026-07-16T09:00:00Z", sharedSession, doctorId: "doc-y");
+
+        // Unfiltered is the patient's whole record — both doctors' transcripts.
+        Assert.Equal(2, (await ListAsync(client, patientId)).Count);
+
+        // Filtered is one doctor's view of it. The filter is a convenience for
+        // the backend, which decides who may ask; it is not a check this service
+        // performs (ADR-0007).
+        var mine = Assert.Single(await ListAsync(client, patientId, doctorId: "doc-x"));
+        Assert.Equal($"doc-x#{patientId}#{sharedSession}#1", mine.DocumentId);
+
+        Assert.Empty(await ListAsync(client, patientId, doctorId: "doc-nobody"));
+    }
+
+    [Fact]
     public async Task A_patient_the_system_knows_nothing_about_has_an_empty_list()
     {
         var client = fixture.Factory.CreateClient();
@@ -159,9 +181,14 @@ public class PatientDocumentListTests(IngestionApiFixture fixture) : IClassFixtu
         Assert.Empty(documents);
     }
 
-    private static async Task<List<PatientDocumentDto>> ListAsync(HttpClient client, string patientId)
+    private static async Task<List<PatientDocumentDto>> ListAsync(
+        HttpClient client, string patientId, string? doctorId = null)
     {
-        var response = await client.GetAsync($"/patients/{patientId}/documents");
+        var route = $"/patients/{patientId}/documents";
+        if (doctorId is not null)
+            route += $"?doctorId={Uri.EscapeDataString(doctorId)}";
+
+        var response = await client.GetAsync(route);
         response.EnsureSuccessStatusCode();
         return (await response.Content.ReadFromJsonAsync<List<PatientDocumentDto>>())!;
     }
