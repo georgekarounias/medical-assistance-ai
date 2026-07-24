@@ -1,17 +1,16 @@
 namespace MedicalAssistance.Ingestion.Api.Ingestions;
 
 /// <summary>
-/// The Document Types this service accepts. The type is declared by the
-/// uploader and never inferred from content (ADR-0004); this set grows by one
-/// entry per Ingestion Strategy.
+/// Names of the Document Types the service knows. The type is declared by the
+/// uploader and never inferred from content (ADR-0004). Which types are actually
+/// accepted is the registered strategies' business, not a list here: the set the
+/// door accepts is <see cref="IngestionStrategyRegistry.SupportedTypes"/>, so a
+/// type is added by registering its strategy and nowhere else.
 /// </summary>
 public static class DocumentTypes
 {
     /// <summary>A doctor–patient session transcript.</summary>
     public const string SessionTranscript = "SessionTranscript";
-
-    /// <summary>Every Document Type that can be submitted today.</summary>
-    public static readonly IReadOnlyList<string> Supported = [SessionTranscript];
 }
 
 /// <summary>
@@ -25,18 +24,21 @@ public static class IngestionRequestValidation
 {
     /// <summary>
     /// Returns one entry per offending field, keyed by the JSON name the caller
-    /// sent. An empty result means the request is valid.
+    /// sent. An empty result means the request is valid. <paramref name="supportedTypes"/>
+    /// is the set the registry serves — the authority on which Document Types the
+    /// door accepts, passed in so validation and routing can never disagree.
     /// </summary>
-    public static Dictionary<string, string[]> Validate(IngestionRequest request)
+    public static Dictionary<string, string[]> Validate(
+        IngestionRequest request, IReadOnlyCollection<string> supportedTypes)
     {
         var errors = new Dictionary<string, string[]>();
 
         if (string.IsNullOrWhiteSpace(request.DocumentType))
             errors["documentType"] = ["A document type is required."];
-        else if (!DocumentTypes.Supported.Contains(request.DocumentType))
+        else if (!supportedTypes.Contains(request.DocumentType))
             errors["documentType"] =
                 [$"'{request.DocumentType}' is not a supported document type. " +
-                 $"Supported types: {string.Join(", ", DocumentTypes.Supported)}."];
+                 $"Supported types: {string.Join(", ", supportedTypes)}."];
 
         if (string.IsNullOrWhiteSpace(request.DoctorId))
             errors["doctorId"] = ["A doctor id is required."];

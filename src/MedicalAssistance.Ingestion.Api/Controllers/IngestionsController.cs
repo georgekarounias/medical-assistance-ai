@@ -11,7 +11,8 @@ namespace MedicalAssistance.Ingestion.Api.Controllers;
 [ApiController]
 [Route("ingestions")]
 [Produces("application/json")]
-public sealed class IngestionsController(IngestionStore store, IngestionQueue queue) : ControllerBase
+public sealed class IngestionsController(
+    IngestionStore store, IngestionQueue queue, IngestionStrategyRegistry strategies) : ControllerBase
 {
     /// <summary>Submits a clinical Document for ingestion.</summary>
     /// <remarks>
@@ -57,7 +58,7 @@ public sealed class IngestionsController(IngestionStore store, IngestionQueue qu
     {
         // Validate before anything durable happens: an invalid submission must
         // leave no trace at all, not a Failed row discovered minutes later.
-        var errors = IngestionRequestValidation.Validate(request);
+        var errors = IngestionRequestValidation.Validate(request, strategies.SupportedTypes);
         if (errors.Count > 0)
             return ValidationProblem(new ValidationProblemDetails(errors));
 

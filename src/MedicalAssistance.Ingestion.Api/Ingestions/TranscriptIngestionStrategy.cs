@@ -13,7 +13,7 @@ namespace MedicalAssistance.Ingestion.Api.Ingestions;
 /// are numbered, the chunking agent proposes line ranges, blurbs, and a summary;
 /// verbatim chunk text is assembled here, in code.
 /// </summary>
-public sealed class TranscriptIngestionStrategy
+public sealed class TranscriptIngestionStrategy : IIngestionStrategy
 {
     private static readonly JsonSerializerOptions PlanJson = new(JsonSerializerDefaults.Web);
 
@@ -52,6 +52,9 @@ public sealed class TranscriptIngestionStrategy
             configuration.GetValue("Chunking:MinTokens", 50),
             configuration.GetValue("Chunking:MaxTokens", 800));
     }
+
+    /// <inheritdoc />
+    public string DocumentType => DocumentTypes.SessionTranscript;
 
     /// <summary>Runs the full strategy for one Transcript: chunk (boundaries-only) → enrich → embed (batched) → atomic store.</summary>
     public async Task IngestAsync(Guid ingestionId, IngestionRequest request, CancellationToken ct)

@@ -124,7 +124,13 @@ builder.Services.AddSingleton<AgentInstructionProvider>();
 builder.Services.AddSingleton<IngestionStatusPublisher>();
 builder.Services.AddScoped<IngestionStore>();
 builder.Services.AddScoped<IngestionQueue>();
-builder.Services.AddScoped<TranscriptIngestionStrategy>();
+
+// The ingestion-strategy registry (ADR-0004). Every strategy is registered as an
+// IIngestionStrategy; the registry keys them by their declared Document Type and
+// is the single authority both routing (the worker) and request validation
+// consult. A new Document Type is one more AddScoped line here — nothing else.
+builder.Services.AddScoped<IIngestionStrategy, TranscriptIngestionStrategy>();
+builder.Services.AddScoped<IngestionStrategyRegistry>();
 builder.Services.AddSingleton(Channel.CreateUnbounded<Guid>());
 builder.Services.AddHostedService<IngestionWorker>();
 builder.Services.AddHostedService<IngestionRecoverySweep>();

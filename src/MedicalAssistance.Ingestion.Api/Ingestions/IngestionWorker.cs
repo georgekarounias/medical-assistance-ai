@@ -99,7 +99,14 @@ public sealed class IngestionWorker(
                 }
 
                 var request = await store.LoadRequestAsync(ingestionId, ct);
-                var strategy = scope.ServiceProvider.GetRequiredService<TranscriptIngestionStrategy>();
+
+                // Deterministic routing (ADR-0004): the document's declared type
+                // selects its strategy. The type was validated at the door against
+                // the same registry, so this always resolves for a submitted
+                // document — an unknown type here would be a bug, and says so.
+                var strategy = scope.ServiceProvider
+                    .GetRequiredService<IngestionStrategyRegistry>()
+                    .For(request.DocumentType);
                 await strategy.IngestAsync(ingestionId, request, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
