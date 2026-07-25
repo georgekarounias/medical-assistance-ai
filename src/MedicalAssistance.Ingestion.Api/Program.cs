@@ -155,33 +155,18 @@ await using (var scope = app.Services.CreateAsyncScope())
     await using (await PostgresAdvisoryLock.AcquireAsync(
         connection, PostgresAdvisoryLock.SchemaMigrationKey))
     {
+        // Migrations own the schema and the agent-instruction seed alike (ADR-0008):
+        // the SeedAgentInstructions migration writes the starting prompts, so a
+        // fresh database comes up with them and there is no application-side seeding
+        // to keep concurrency-safe. The migration lock and the migration history
+        // already make every migration run exactly once across a rolling deploy, so
+        // the duplicate-key race the old startup seed loop had to guard against (B17)
+        // cannot arise.
         await db.Database.MigrateAsync();
 
         // The vector extension may have been created by that migration, after
         // this pool's type catalog was loaded — reload so 'vector' is usable.
         await connection.ReloadTypesAsync();
-
-        // Seed missing agent instructions from code defaults under the same lock
-        // as the migration, and for the same reason: seeding writes rows keyed by
-        // agent name, so two instances deploying at once against a fresh database
-        // would both read it empty and both insert the defaults, and the second
-        // would fail on the duplicate key. Serializing it here means the instance
-        // that gets the lock second sees the first's seed and skips it.
-        var seededNames = await db.AgentInstructions.Select(a => a.Name).ToListAsync();
-        foreach (var (name, instructions) in AgentInstructionDefaults.Defaults)
-        {
-            if (!seededNames.Contains(name))
-            {
-                db.AgentInstructions.Add(new AgentInstruction
-                {
-                    Name = name,
-                    Instructions = instructions,
-                    Version = 1,
-                    UpdatedAt = DateTimeOffset.UtcNow,
-                });
-            }
-        }
-        await db.SaveChangesAsync();
     }
     await connection.CloseAsync();
 

@@ -25,7 +25,7 @@ public sealed class DoctorNoteStrategy(ProseIngestionPipeline pipeline) : IInges
             request,
             body: request.Text!,
             bodyChunkKind: "note",
-            agentInstructionName: AgentInstructionDefaults.DoctorNoteChunker,
+            agentInstructionName: AgentNames.DoctorNoteChunker,
             promptHeader: "Note lines:",
             ct);
 }

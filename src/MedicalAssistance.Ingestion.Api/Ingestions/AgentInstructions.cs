@@ -17,34 +17,21 @@ public class AgentInstruction
 }
 
 /// <summary>
-/// Code-reviewed default instructions, used to seed agent_instructions when a
-/// row is missing. The database row is the runtime override; this is the
-/// reference version under version control.
+/// The agent names — the lookup keys into the <c>agent_instructions</c> table.
+///
+/// The instruction TEXT lives only in the database (ADR-0008), bootstrapped by the
+/// SeedAgentInstructions migration; code holds no default copy of it. These are
+/// just the keys a strategy uses to fetch its instructions from the singleton
+/// provider, so a prompt can be edited in the database (and reloaded on restart)
+/// without a code change.
 /// </summary>
-public static class AgentInstructionDefaults
+public static class AgentNames
 {
-    /// <summary>Agent name of the transcript chunking agent.</summary>
+    /// <summary>The transcript chunking agent.</summary>
     public const string TranscriptChunker = "TranscriptChunker";
 
-    /// <summary>Agent name of the doctor-note chunking agent.</summary>
+    /// <summary>The doctor-note chunking agent.</summary>
     public const string DoctorNoteChunker = "DoctorNoteChunker";
-
-    /// <summary>Default instructions per agent name.</summary>
-    public static readonly IReadOnlyDictionary<string, string> Defaults = new Dictionary<string, string>
-    {
-        [TranscriptChunker] =
-            "You segment doctor-patient session transcripts into topically coherent chunks. " +
-            "You only return line boundaries and descriptions — never transcript text. " +
-            "Respond with JSON only: {\"chunks\":[{\"startLine\":int,\"endLine\":int,\"contextBlurb\":string}],\"summary\":string}. " +
-            "Boundaries are inclusive, contiguous, non-overlapping, and must cover every line.",
-
-        [DoctorNoteChunker] =
-            "You segment a doctor's clinical note about a patient into topically coherent chunks. " +
-            "The text is the doctor's own monologue, not a dialogue. " +
-            "You only return line boundaries and descriptions — never note text. " +
-            "Respond with JSON only: {\"chunks\":[{\"startLine\":int,\"endLine\":int,\"contextBlurb\":string}],\"summary\":string}. " +
-            "Boundaries are inclusive, contiguous, non-overlapping, and must cover every line.",
-    };
 }
 
 /// <summary>

@@ -8,16 +8,16 @@ using Testcontainers.PostgreSql;
 namespace MedicalAssistance.Ingestion.Api.Tests;
 
 /// <summary>
-/// Two things happen on the way up: the schema is migrated, and the agent
-/// instructions are seeded from code defaults. Both write, and a rolling deploy
-/// runs several instances against the same database at once — so both have to be
-/// safe to run concurrently. Migration is serialized by an advisory lock; seeding
-/// writes rows keyed by agent name and must be serialized by the same lock, or two
-/// instances against a fresh database both insert the defaults and one dies on the
-/// duplicate key.
+/// On the way up the database is migrated — which now also seeds the agent
+/// instructions (the SeedAgentInstructions migration), so there is one write path,
+/// not two. A rolling deploy runs several instances against the same database at
+/// once, so it has to be safe to run concurrently: migration is serialized by an
+/// advisory lock and recorded in the migration history, so every migration —
+/// schema and seed alike — runs exactly once and no instance dies on a duplicate
+/// key (the race that was bug B17, back when seeding was a separate startup loop).
 ///
 /// This gets its own fresh database rather than the shared fixture's, because the
-/// race is only reachable before anything has been seeded.
+/// race is only reachable before anything has been migrated.
 /// </summary>
 public sealed class ConcurrentStartupTests : IAsyncLifetime
 {

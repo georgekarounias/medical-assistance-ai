@@ -18,7 +18,7 @@ public sealed class TranscriptIngestionStrategy(ProseIngestionPipeline pipeline)
             request,
             body: request.Transcript!,
             bodyChunkKind: "dialog",
-            agentInstructionName: AgentInstructionDefaults.TranscriptChunker,
+            agentInstructionName: AgentNames.TranscriptChunker,
             promptHeader: "Transcript lines:",
             ct);
 }
