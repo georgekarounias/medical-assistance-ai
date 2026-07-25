@@ -8,29 +8,35 @@ namespace MedicalAssistance.Ingestion.Api.Ingestions;
 /// that names documents the delete endpoint cannot find would be worse than no
 /// list at all.
 ///
-/// A transcript is keyed by doctor, patient, session and sequence number
-/// together. Those four are what make a document unique, and they are carried
+/// Each Document Type declares what makes it unique, and the whole key is carried
 /// in the id rather than merely alongside it because the id travels alone:
-/// <c>DELETE /documents/{documentId}</c> receives nothing else, so an id naming
-/// only a session would be safe to act on only if session ids were known to be
-/// unique across patients — and they are not known to be. Carrying the whole key
-/// makes the identifier answer that question by itself, instead of depending on
-/// a property of the backend nobody has confirmed.
+/// <c>DELETE /documents/{documentId}</c> receives nothing else. A transcript is
+/// keyed by doctor, patient, session and sequence number; a note by doctor,
+/// patient and noteId. An id naming only a session would be safe to act on only
+/// if session ids were known to be unique across patients — and they are not — so
+/// carrying the whole key makes the identifier answer "whose document is this?"
+/// by itself, instead of depending on a property of the backend nobody confirmed.
 ///
-/// The same key decides what a Correction replaces, so every query that asks
-/// "is this the same document?" has to match on all four. Those live in
-/// <see cref="IngestionStore" />: in-flight detection, duplicate detection, the
-/// staleness check on rerun, and supersede.
+/// This is the single per-type identity expression the store matches on. The same
+/// id decides what a Correction replaces, so every query that asks "is this the
+/// same document?" compares this string — never the raw nullable columns, whose
+/// EF-rewritten both-null equality would make two session-less notes look like one
+/// document (bug B09). Those queries live in <see cref="IngestionStore" />:
+/// in-flight detection, duplicate detection, the staleness check on rerun, and
+/// supersede.
 /// </summary>
 public static class DocumentIdentity
 {
-    /// <summary>The Document id for a submission of the given Document Type.</summary>
-    public static string For(
-        string documentType, string doctorId, string patientId, string? sessionId, int? sequenceNumber) =>
-        documentType switch
+    /// <summary>The Document id for a submitted payload, per its declared type.</summary>
+    public static string For(IngestionRequest request) =>
+        request.DocumentType switch
         {
-            DocumentTypes.SessionTranscript => $"{doctorId}#{patientId}#{sessionId}#{sequenceNumber}",
-            _ => throw new NotSupportedException($"No document identity is defined for '{documentType}'."),
+            DocumentTypes.SessionTranscript =>
+                $"{request.DoctorId}#{request.PatientId}#{request.SessionId}#{request.SequenceNumber}",
+            DocumentTypes.DoctorNote =>
+                $"{request.DoctorId}#{request.PatientId}#{request.NoteId}",
+            _ => throw new NotSupportedException(
+                $"No document identity is defined for '{request.DocumentType}'."),
         };
 }
 

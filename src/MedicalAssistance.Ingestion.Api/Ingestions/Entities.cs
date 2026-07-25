@@ -31,7 +31,7 @@ public class IngestionRecord
     /// <summary>Patient the document is about.</summary>
     public string PatientId { get; set; } = null!;
 
-    /// <summary>Session identity component (transcripts only).</summary>
+    /// <summary>Session link — a transcript's session, or a note's optional encounter link. Not part of a note's identity.</summary>
     public string? SessionId { get; set; }
 
     /// <summary>Transcript ordinal within its Session (transcripts only).</summary>
@@ -157,7 +157,7 @@ public class Chunk
     /// <summary>Language of the chunk text (el/en).</summary>
     public string? Language { get; set; }
 
-    /// <summary>What this text is: dialog or summary (note, labPanel, imagingReport planned).</summary>
+    /// <summary>What this text is: dialog, note or summary (labPanel, imagingReport planned).</summary>
     public string ChunkKind { get; set; } = null!;
 
     /// <summary>Type-specific provenance as JSON — for transcripts the line range, e.g. {"startLine":0,"endLine":3}.</summary>

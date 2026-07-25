@@ -129,7 +129,11 @@ builder.Services.AddScoped<IngestionQueue>();
 // IIngestionStrategy; the registry keys them by their declared Document Type and
 // is the single authority both routing (the worker) and request validation
 // consult. A new Document Type is one more AddScoped line here — nothing else.
+// The prose strategies (transcript, note) are thin adapters over one shared
+// pipeline; they differ only in text source, chunk kind, and agent instructions.
+builder.Services.AddScoped<ProseIngestionPipeline>();
 builder.Services.AddScoped<IIngestionStrategy, TranscriptIngestionStrategy>();
+builder.Services.AddScoped<IIngestionStrategy, DoctorNoteStrategy>();
 builder.Services.AddScoped<IngestionStrategyRegistry>();
 builder.Services.AddSingleton(Channel.CreateUnbounded<Guid>());
 builder.Services.AddHostedService<IngestionWorker>();

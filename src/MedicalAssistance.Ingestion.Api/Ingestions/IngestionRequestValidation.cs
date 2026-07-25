@@ -11,6 +11,9 @@ public static class DocumentTypes
 {
     /// <summary>A doctor–patient session transcript.</summary>
     public const string SessionTranscript = "SessionTranscript";
+
+    /// <summary>A typed clinical note written by the doctor about a patient.</summary>
+    public const string DoctorNote = "DoctorNote";
 }
 
 /// <summary>
@@ -46,24 +49,32 @@ public static class IngestionRequestValidation
         if (string.IsNullOrWhiteSpace(request.PatientId))
             errors["patientId"] = ["A patient id is required."];
 
-        if (string.IsNullOrWhiteSpace(request.Transcript))
-            errors["transcript"] = ["A transcript with at least one non-empty line is required."];
-
-        if (request.DocumentType == DocumentTypes.SessionTranscript)
-            ValidateSessionIdentity(request, errors);
+        // The body and the identity are per-type: a transcript has dialog and a
+        // (sessionId, sequenceNumber) key, a note has monologue text and a noteId.
+        // Only the matching type's fields are required, so a note is never asked
+        // for a transcript and vice versa.
+        switch (request.DocumentType)
+        {
+            case DocumentTypes.SessionTranscript:
+                ValidateTranscript(request, errors);
+                break;
+            case DocumentTypes.DoctorNote:
+                ValidateNote(request, errors);
+                break;
+        }
 
         return errors;
     }
 
     /// <summary>
-    /// A transcript is identified by doctor, patient, session and sequence
-    /// number together. The doctor and patient are already required of every
-    /// document; these two complete the key, and they are what later tells a
-    /// Correction from a Continuation. Without them a re-upload could not be
-    /// recognised as replacing anything, so both are mandatory from the very
-    /// first submission.
+    /// A transcript is identified by doctor, patient, session and sequence number
+    /// together. The doctor and patient are already required of every document;
+    /// the session and sequence complete the key and are what later tells a
+    /// Correction from a Continuation, so both are mandatory from the first
+    /// submission — without them a re-upload could not be recognised as replacing
+    /// anything. The transcript body itself is required too.
     /// </summary>
-    private static void ValidateSessionIdentity(IngestionRequest request, Dictionary<string, string[]> errors)
+    private static void ValidateTranscript(IngestionRequest request, Dictionary<string, string[]> errors)
     {
         if (string.IsNullOrWhiteSpace(request.SessionId))
             errors["sessionId"] = ["A session id is required for SessionTranscript documents."];
@@ -72,5 +83,24 @@ public static class IngestionRequestValidation
             errors["sequenceNumber"] = ["A sequence number is required for SessionTranscript documents."];
         else if (request.SequenceNumber < 0)
             errors["sequenceNumber"] = ["A sequence number cannot be negative."];
+
+        if (string.IsNullOrWhiteSpace(request.Transcript))
+            errors["transcript"] = ["A transcript with at least one non-empty line is required."];
+    }
+
+    /// <summary>
+    /// A note is identified by its backend-assigned noteId — the whole of its
+    /// identity, so it is mandatory from the first submission for the same reason a
+    /// transcript's session key is: without it a re-POST could not be recognised as
+    /// a Correction. The sessionId is optional (a note may or may not link to an
+    /// encounter). The note body itself is required.
+    /// </summary>
+    private static void ValidateNote(IngestionRequest request, Dictionary<string, string[]> errors)
+    {
+        if (string.IsNullOrWhiteSpace(request.NoteId))
+            errors["noteId"] = ["A note id is required for DoctorNote documents."];
+
+        if (string.IsNullOrWhiteSpace(request.Text))
+            errors["text"] = ["A note with at least one non-empty line of text is required."];
     }
 }

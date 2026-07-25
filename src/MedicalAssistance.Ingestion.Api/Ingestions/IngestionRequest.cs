@@ -16,7 +16,7 @@ namespace MedicalAssistance.Ingestion.Api.Ingestions;
 /// </summary>
 public sealed record IngestionRequest
 {
-    /// <summary>The declared Document Type, supplied by the uploader — never inferred. Required. Currently supported: <c>SessionTranscript</c>.</summary>
+    /// <summary>The declared Document Type, supplied by the uploader — never inferred. Required. Currently supported: <c>SessionTranscript</c>, <c>DoctorNote</c>.</summary>
     public string DocumentType { get; init; } = null!;
 
     /// <summary>Identifier of the doctor the document belongs to. Required. Stamped on every chunk for access scoping.</summary>
@@ -35,6 +35,14 @@ public sealed record IngestionRequest
     /// </summary>
     public int? SequenceNumber { get; init; }
 
+    /// <summary>
+    /// Identifier of a DoctorNote, assigned by the backend. It is the note's whole
+    /// identity: re-submitting the same noteId with different text is a Correction
+    /// (supersedes), just as a transcript's (sessionId, sequenceNumber) is.
+    /// Required for <c>DoctorNote</c>; ignored for other types.
+    /// </summary>
+    public string? NoteId { get; init; }
+
     /// <summary>Clinical date/time of the session (not the upload time). Powers recency queries like "the last session".</summary>
     public DateTimeOffset? SessionDate { get; init; }
 
@@ -42,12 +50,19 @@ public sealed record IngestionRequest
     public string? Language { get; init; }
 
     /// <summary>
-    /// The transcript as free text. Required, and must hold at least one non-empty
-    /// line. Dialog-like, by convention one utterance per line ("Doctor: …" /
-    /// "Patient: …"); the service treats non-empty lines as the atoms that chunk
-    /// boundaries snap to, and never alters the text.
+    /// The transcript as free text. Required for <c>SessionTranscript</c>, and must
+    /// hold at least one non-empty line. Dialog-like, by convention one utterance
+    /// per line ("Doctor: …" / "Patient: …"); the service treats non-empty lines as
+    /// the atoms that chunk boundaries snap to, and never alters the text.
     /// </summary>
-    public string Transcript { get; init; } = null!;
+    public string? Transcript { get; init; }
+
+    /// <summary>
+    /// A DoctorNote's body as free text. Required for <c>DoctorNote</c>, and must
+    /// hold at least one non-empty line. It runs through the same prose pipeline as
+    /// a transcript (monologue rather than dialog); the service never alters it.
+    /// </summary>
+    public string? Text { get; init; }
 }
 
 /// <summary>The current state of one Ingestion.</summary>

@@ -23,28 +23,25 @@ public sealed record ChunkToStore(
     Vector Embedding);
 
 /// <summary>
-/// What an Ingestion is about: who it belongs to — the routing information every
-/// status event carries, because this service has no idea which devices are
-/// online — and which Document it concerns.
+/// What an Ingestion is about: which Document it concerns and who it belongs to —
+/// the routing information every status event carries, because this service has no
+/// idea which devices are online.
 /// </summary>
-/// <param name="DocumentType">The declared Document Type.</param>
+/// <param name="DocumentId">
+/// The Document this Ingestion is of. Assembled once by <see cref="DocumentIdentity.For"/>
+/// and thereafter read from the stored column, never rebuilt from parts — different
+/// Document Types put different parts in it (a note has no sequence number), so a
+/// single reassembly formula could not serve them all.
+/// </param>
 /// <param name="DoctorId">The doctor who submitted the document.</param>
 /// <param name="PatientId">The patient the document is about.</param>
-/// <param name="SessionId">Session identity component (transcripts only).</param>
-/// <param name="SequenceNumber">Transcript ordinal within its Session (transcripts only).</param>
+/// <param name="SessionId">Session link (transcripts and session-linked notes only).</param>
 public sealed record IngestionIdentity(
-    string DocumentType, string DoctorId, string PatientId, string? SessionId, int? SequenceNumber)
+    string DocumentId, string DoctorId, string PatientId, string? SessionId)
 {
-    /// <summary>
-    /// The Document this Ingestion is of. Assembled here so that everything
-    /// telling a client about an ingestion names the document the same way, and
-    /// no consumer has to rebuild the identifier from its parts.
-    /// </summary>
-    public string DocumentId => DocumentIdentity.For(DocumentType, DoctorId, PatientId, SessionId, SequenceNumber);
-
     /// <summary>The identity of a submission that has not been stored yet.</summary>
     public static IngestionIdentity Of(IngestionRequest request) => new(
-        request.DocumentType, request.DoctorId, request.PatientId, request.SessionId, request.SequenceNumber);
+        DocumentIdentity.For(request), request.DoctorId, request.PatientId, request.SessionId);
 }
 
 /// <summary>What came of asking for an Ingestion to be rerun.</summary>
@@ -133,22 +130,18 @@ public sealed class IngestionStore(IngestionDbContext db)
     /// has not landed yet, so the second submission is refused until the first
     /// reaches a terminal state.
     ///
-    /// The patient is part of the match even though a transcript's identity is
-    /// (sessionId, sequenceNumber): if session ids are globally unique the extra
-    /// predicate costs nothing, and if they ever turn out to be per-patient it
-    /// stops one patient's upload from blocking another's.
+    /// The document is matched by its assembled id, which carries the whole
+    /// per-type key including the patient: whatever a type's identity is, two
+    /// submissions are the same document exactly when their ids are equal, and one
+    /// patient's upload can never block another's.
     /// </summary>
     public Task<Guid?> FindInFlightAsync(IngestionRequest request, CancellationToken ct = default)
     {
         var (_, contentHash) = SerializeAndHash(request);
+        var documentId = DocumentIdentity.For(request);
         return db.Ingestions.AsNoTracking()
             .Where(i => (i.Status == "Queued" || i.Status == "Processing")
-                        && ((i.DocumentType == request.DocumentType
-                             && i.DoctorId == request.DoctorId
-                             && i.PatientId == request.PatientId
-                             && i.SessionId == request.SessionId
-                             && i.SequenceNumber == request.SequenceNumber)
-                            || i.ContentHash == contentHash))
+                        && (i.DocumentId == documentId || i.ContentHash == contentHash))
             .OrderBy(i => i.CreatedAt)
             .Select(i => (Guid?)i.Id)
             .FirstOrDefaultAsync(ct);
@@ -160,21 +153,17 @@ public sealed class IngestionStore(IngestionDbContext db)
     /// has never been submitted for this identity. Same identity with different
     /// content is a Correction, not a duplicate, and is not reported here.
     ///
-    /// The doctor and patient are matched explicitly, as part of the document
-    /// key. The hash covers them too, so this was already correct without the
-    /// predicates — but only by an argument someone has to reconstruct, and a
-    /// document key is worth stating outright.
+    /// The document is matched by its assembled id, which is the whole per-type
+    /// key. The hash covers the identity's parts too, so pairing the two was
+    /// already correct — but the id states the key outright rather than leaving it
+    /// to an argument, and it is the one match every type shares.
     /// </summary>
     public Task<IdenticalIngestion?> FindIdenticalAsync(IngestionRequest request, CancellationToken ct = default)
     {
         var (_, contentHash) = SerializeAndHash(request);
+        var documentId = DocumentIdentity.For(request);
         return db.Ingestions.AsNoTracking()
-            .Where(i => i.DocumentType == request.DocumentType
-                        && i.DoctorId == request.DoctorId
-                        && i.PatientId == request.PatientId
-                        && i.SessionId == request.SessionId
-                        && i.SequenceNumber == request.SequenceNumber
-                        && i.ContentHash == contentHash)
+            .Where(i => i.DocumentId == documentId && i.ContentHash == contentHash)
             .OrderByDescending(i => i.CreatedAt)
             .Select(i => new IdenticalIngestion(i.Id, i.Status))
             .FirstOrDefaultAsync(ct)!;
@@ -229,11 +218,7 @@ public sealed class IngestionStore(IngestionDbContext db)
                             newer.Id != i.Id
                             && newer.Status == "Completed"
                             && newer.CreatedAt > i.CreatedAt
-                            && newer.DocumentType == i.DocumentType
-                            && newer.DoctorId == i.DoctorId
-                            && newer.PatientId == i.PatientId
-                            && newer.SessionId == i.SessionId
-                            && newer.SequenceNumber == i.SequenceNumber))
+                            && newer.DocumentId == i.DocumentId))
             .ExecuteUpdateAsync(
                 setters => setters
                     .SetProperty(i => i.Status, "Queued")
@@ -267,8 +252,7 @@ public sealed class IngestionStore(IngestionDbContext db)
         var record = new IngestionRecord
         {
             Id = Guid.NewGuid(),
-            DocumentId = DocumentIdentity.For(
-                request.DocumentType, request.DoctorId, request.PatientId, request.SessionId, request.SequenceNumber),
+            DocumentId = DocumentIdentity.For(request),
             DocumentType = request.DocumentType,
             DoctorId = request.DoctorId,
             PatientId = request.PatientId,
@@ -295,8 +279,7 @@ public sealed class IngestionStore(IngestionDbContext db)
     public Task<IngestionIdentity?> GetIdentityAsync(Guid id, CancellationToken ct = default) =>
         db.Ingestions.AsNoTracking()
             .Where(i => i.Id == id)
-            .Select(i => new IngestionIdentity(
-                i.DocumentType, i.DoctorId, i.PatientId, i.SessionId, i.SequenceNumber))
+            .Select(i => new IngestionIdentity(i.DocumentId, i.DoctorId, i.PatientId, i.SessionId))
             .FirstOrDefaultAsync(ct)!;
 
     /// <summary>Returns the lifecycle state of one Ingestion, or null if the id is unknown.</summary>
@@ -323,14 +306,12 @@ public sealed class IngestionStore(IngestionDbContext db)
         if (activeOnly)
             query = query.Where(i => i.Status == "Queued" || i.Status == "Processing");
 
-        // Materialized before the document id is assembled: building it is C#
-        // that no database can run, and the list is capped anyway.
         var ingestions = await query
             .OrderByDescending(i => i.UpdatedAt)
             .Take(limit)
             .Select(i => new
             {
-                i.Id, i.DocumentType, i.PatientId, i.SessionId, i.SequenceNumber,
+                i.Id, i.DocumentId, i.DocumentType, i.PatientId, i.SessionId, i.SequenceNumber,
                 i.Status, i.ErrorMessage, i.CreatedAt, i.UpdatedAt,
             })
             .ToListAsync(ct);
@@ -339,8 +320,7 @@ public sealed class IngestionStore(IngestionDbContext db)
             .Select(i => new IngestionSummary
             {
                 IngestionId = i.Id,
-                DocumentId = DocumentIdentity.For(
-                    i.DocumentType, doctorId, i.PatientId, i.SessionId, i.SequenceNumber),
+                DocumentId = i.DocumentId,
                 DocumentType = i.DocumentType,
                 PatientId = i.PatientId,
                 SessionId = i.SessionId,
@@ -380,19 +360,19 @@ public sealed class IngestionStore(IngestionDbContext db)
             .OrderByDescending(i => i.UpdatedAt)
             .Select(i => new
             {
-                i.Id, i.DocumentType, i.DoctorId, i.SessionId, i.SequenceNumber,
+                i.Id, i.DocumentId, i.DocumentType, i.DoctorId, i.SessionId, i.SequenceNumber,
                 i.DocumentDate, i.Status, i.ErrorMessage, i.UpdatedAt,
             })
             .ToListAsync(ct);
 
         // Bounded by one patient's care history, so collapsing to the latest per
-        // document runs here rather than as a window function nobody can read.
-        // The grouping is the document key minus the patient, which this query
-        // already fixes — drop the doctor from it and two doctors' transcripts
-        // of the same session would collapse into one row that names whichever
-        // was touched last.
+        // document runs here rather than as a window function nobody can read. The
+        // collapse key is the assembled document id — the whole per-type key — so a
+        // note keyed on noteId and a transcript keyed on (session, sequence) each
+        // group correctly, and two session-less notes never merge into one row the
+        // way comparing their (null) session and sequence columns would.
         return ingestions
-            .DistinctBy(i => (i.DocumentType, i.DoctorId, i.SessionId, i.SequenceNumber))
+            .DistinctBy(i => i.DocumentId)
             // After the collapse, so it is the document's current state that is
             // judged: a slot whose latest version is a Deleted tombstone drops
             // out entirely rather than falling back to an older, still-live-looking
@@ -400,8 +380,7 @@ public sealed class IngestionStore(IngestionDbContext db)
             .Where(i => i.Status != "Deleted")
             .Select(i => new PatientDocument
             {
-                DocumentId = DocumentIdentity.For(
-                    i.DocumentType, i.DoctorId, patientId, i.SessionId, i.SequenceNumber),
+                DocumentId = i.DocumentId,
                 DocumentType = i.DocumentType,
                 SessionId = i.SessionId,
                 SequenceNumber = i.SequenceNumber,
@@ -662,11 +641,7 @@ public sealed class IngestionStore(IngestionDbContext db)
         await db.Ingestions
             .Where(i => i.Id != ingestionId
                         && i.Status == "Completed"
-                        && i.DocumentType == request.DocumentType
-                        && i.DoctorId == request.DoctorId
-                        && i.PatientId == request.PatientId
-                        && i.SessionId == request.SessionId
-                        && i.SequenceNumber == request.SequenceNumber)
+                        && i.DocumentId == documentId)
             .ExecuteUpdateAsync(
                 setters => setters
                     .SetProperty(i => i.Status, "Superseded")
@@ -677,14 +652,16 @@ public sealed class IngestionStore(IngestionDbContext db)
     /// <summary>
     /// The submitted payload, plus a hash of what the document actually *is*.
     ///
-    /// The hash deliberately excludes <see cref="IngestionRequest.SessionId"/>
-    /// and <see cref="IngestionRequest.SequenceNumber"/> — where a document sits
-    /// in a session's numbering is filing, not content — so the same recording
-    /// re-uploaded under a fresh session or sequence number is still recognised
-    /// as already ingested. Everything else is in scope: the patient and doctor
-    /// (so one patient's document can never dedup against another's), and the
-    /// clinical date and language (so correcting them re-ingests and the stored
-    /// chunk metadata is corrected with them).
+    /// The hash deliberately excludes the filing identifiers — a transcript's
+    /// <see cref="IngestionRequest.SessionId"/> and
+    /// <see cref="IngestionRequest.SequenceNumber"/>, and a note's
+    /// <see cref="IngestionRequest.NoteId"/> — because where a document is filed is
+    /// not what it contains, so the same content re-uploaded under a fresh
+    /// identifier is still recognised as already ingested. Everything else is in
+    /// scope: the patient and doctor (so one patient's document can never dedup
+    /// against another's), the clinical date and language (so correcting them
+    /// re-ingests), and the body itself — a transcript's Transcript or a note's
+    /// Text, whichever the type carries.
     /// </summary>
     private static (string Payload, string ContentHash) SerializeAndHash(IngestionRequest request)
     {
@@ -698,6 +675,7 @@ public sealed class IngestionStore(IngestionDbContext db)
                 request.SessionDate,
                 request.Language,
                 request.Transcript,
+                request.Text,
             },
             PayloadJson);
         return (payload, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content))));

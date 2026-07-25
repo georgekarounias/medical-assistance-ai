@@ -123,8 +123,7 @@ public sealed class RecordingTranscriptStrategy(IngestionStore store, RoutedInge
     public async Task IngestAsync(Guid ingestionId, IngestionRequest request, CancellationToken ct)
     {
         routed.Record(ingestionId);
-        var documentId = DocumentIdentity.For(
-            request.DocumentType, request.DoctorId, request.PatientId, request.SessionId, request.SequenceNumber);
+        var documentId = DocumentIdentity.For(request);
         await store.CompleteWithChunksAsync(
             ingestionId, documentId, request, [], instructionVersion: 0, chatModel: "routing-double", ct);
     }

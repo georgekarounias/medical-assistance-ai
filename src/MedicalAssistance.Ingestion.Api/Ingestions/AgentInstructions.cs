@@ -26,12 +26,22 @@ public static class AgentInstructionDefaults
     /// <summary>Agent name of the transcript chunking agent.</summary>
     public const string TranscriptChunker = "TranscriptChunker";
 
+    /// <summary>Agent name of the doctor-note chunking agent.</summary>
+    public const string DoctorNoteChunker = "DoctorNoteChunker";
+
     /// <summary>Default instructions per agent name.</summary>
     public static readonly IReadOnlyDictionary<string, string> Defaults = new Dictionary<string, string>
     {
         [TranscriptChunker] =
             "You segment doctor-patient session transcripts into topically coherent chunks. " +
             "You only return line boundaries and descriptions — never transcript text. " +
+            "Respond with JSON only: {\"chunks\":[{\"startLine\":int,\"endLine\":int,\"contextBlurb\":string}],\"summary\":string}. " +
+            "Boundaries are inclusive, contiguous, non-overlapping, and must cover every line.",
+
+        [DoctorNoteChunker] =
+            "You segment a doctor's clinical note about a patient into topically coherent chunks. " +
+            "The text is the doctor's own monologue, not a dialogue. " +
+            "You only return line boundaries and descriptions — never note text. " +
             "Respond with JSON only: {\"chunks\":[{\"startLine\":int,\"endLine\":int,\"contextBlurb\":string}],\"summary\":string}. " +
             "Boundaries are inclusive, contiguous, non-overlapping, and must cover every line.",
     };
