@@ -16,7 +16,7 @@ namespace MedicalAssistance.Ingestion.Api.Ingestions;
 /// </summary>
 public sealed record IngestionRequest
 {
-    /// <summary>The declared Document Type, supplied by the uploader — never inferred. Required. Currently supported: <c>SessionTranscript</c>, <c>DoctorNote</c>.</summary>
+    /// <summary>The declared Document Type, supplied by the uploader — never inferred. Required. Currently supported: <c>SessionTranscript</c>, <c>DoctorNote</c>, <c>LabReport</c>, <c>ImagingReport</c>.</summary>
     public string DocumentType { get; init; } = null!;
 
     /// <summary>Identifier of the doctor the document belongs to. Required. Stamped on every chunk for access scoping.</summary>
@@ -43,6 +43,13 @@ public sealed record IngestionRequest
     /// </summary>
     public string? NoteId { get; init; }
 
+    /// <summary>
+    /// Backend-assigned identifier of a lab or imaging report — the report's whole
+    /// identity, so a re-POST of the same reportId with different content is a
+    /// Correction (supersedes). Required for <c>LabReport</c> and <c>ImagingReport</c>.
+    /// </summary>
+    public string? ReportId { get; init; }
+
     /// <summary>Clinical date/time of the session (not the upload time). Powers recency queries like "the last session".</summary>
     public DateTimeOffset? SessionDate { get; init; }
 
@@ -63,6 +70,22 @@ public sealed record IngestionRequest
     /// a transcript (monologue rather than dialog); the service never alters it.
     /// </summary>
     public string? Text { get; init; }
+
+    /// <summary>
+    /// A lab or imaging report as a base64-encoded, digitally generated PDF.
+    /// Required for the PDF-backed types (lab and imaging reports) and size-capped
+    /// at intake. Digital PDFs only — scanned or photographed documents have no
+    /// text layer and are out of scope (ADR-0005).
+    /// </summary>
+    public string? PdfContent { get; init; }
+
+    /// <summary>
+    /// Link to the actual image in the doctor's existing viewer, for an
+    /// <c>ImagingReport</c>. Required for that type: every stored chunk carries it,
+    /// so a finding is one tap from the image. The pixels themselves are never
+    /// ingested (ADR-0005).
+    /// </summary>
+    public string? ImageLink { get; init; }
 }
 
 /// <summary>The current state of one Ingestion.</summary>

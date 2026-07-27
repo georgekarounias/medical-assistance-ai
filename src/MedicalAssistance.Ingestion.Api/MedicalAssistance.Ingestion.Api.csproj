@@ -10,6 +10,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Azure.AI.DocumentIntelligence" Version="1.0.0" />
+    <PackageReference Include="Azure.AI.OpenAI" Version="2.1.0" />
     <PackageReference Include="Microsoft.Agents.AI" Version="1.13.0" />
     <!-- Design-time only (migration scaffolding); pinned to the EF Core version
          the Npgsql provider brings in, so the test project does not see two. -->
@@ -18,6 +20,13 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.Extensions.AI" Version="10.7.0" />
+    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.8.1" />
+    <!-- Ingestion package set aligned with the consultant-ai back end so both
+         services declare the same Microsoft data-ingestion + tokenizer stack.
+         Versions match ConsultantAPI.AI exactly. -->
+    <PackageReference Include="Microsoft.Extensions.DataIngestion" Version="10.4.0-preview.1.26160.2" />
+    <PackageReference Include="Microsoft.Extensions.DataIngestion.Markdig" Version="10.4.0-preview.1.26160.2" />
+    <PackageReference Include="Microsoft.ML.Tokenizers.Data.Cl100kBase" Version="1.0.1" />
     <PackageReference Include="Npgsql" Version="10.0.3" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
     <PackageReference Include="Pgvector" Version="0.3.2" />

@@ -125,7 +125,8 @@ public sealed class RecordingTranscriptStrategy(IngestionStore store, RoutedInge
         routed.Record(ingestionId);
         var documentId = DocumentIdentity.For(request);
         await store.CompleteWithChunksAsync(
-            ingestionId, documentId, request, [], instructionVersion: 0, chatModel: "routing-double", ct);
+            ingestionId, documentId, request, [], instructionVersion: 0, chatModel: "routing-double",
+            embeddingModel: null, analytes: null, analytesExtracted: null, ct);
     }
 }
 

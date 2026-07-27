@@ -85,6 +85,15 @@ public class IngestionRecord
     /// <summary>Chat model that processed the document (set on completion).</summary>
     public string? ChatModel { get; set; }
 
+    /// <summary>
+    /// For a LabReport: whether verified analyte rows were extracted (Tier 2). True
+    /// when every mapped row passed verbatim verification and the rows were stored;
+    /// false when any row could not be verified, in which case none were stored
+    /// (all-or-nothing); null for document types that have no analytes. Queryable,
+    /// so a report whose analytes failed can be found and re-processed.
+    /// </summary>
+    public bool? AnalytesExtracted { get; set; }
+
     /// <summary>When the ingestion was accepted.</summary>
     public DateTimeOffset CreatedAt { get; set; }
 
@@ -118,6 +127,57 @@ public class ErasureLogEntry
 
     /// <summary>How many Chunks were removed.</summary>
     public int ChunksErased { get; set; }
+}
+
+/// <summary>
+/// One verified analyte result from a LabReport (Tier 2), stored relationally
+/// beside the vector chunks for trend queries vector search cannot answer
+/// ("HbA1c over the year"). The value, unit, reference range and flag are copied
+/// verbatim from the extracted cells the mapping agent pointed at — only the
+/// canonical name is agent-assigned (ADR-0006). Rows exist all-or-nothing: a
+/// document holds every verified row or none, so a trend query never sees a
+/// partially extracted panel.
+/// </summary>
+public class AnalyteResult
+{
+    /// <summary>Primary key.</summary>
+    public Guid Id { get; set; }
+
+    /// <summary>The Ingestion run that produced this row (audit; cascade-delete with the document).</summary>
+    public Guid IngestionId { get; set; }
+
+    /// <summary>Identity of the source Document — the delete/supersede target, matched with its chunks.</summary>
+    public string DocumentId { get; set; } = null!;
+
+    /// <summary>Patient scope — the retrieval filter and the erasure target.</summary>
+    public string PatientId { get; set; } = null!;
+
+    /// <summary>Doctor scope for access filtering.</summary>
+    public string DoctorId { get; set; } = null!;
+
+    /// <summary>Agent-assigned canonical analyte name, e.g. <c>Hemoglobin</c> (the one mapping, not a value).</summary>
+    public string CanonicalName { get; set; } = null!;
+
+    /// <summary>The analyte name exactly as printed in the report — copied verbatim from the source cell.</summary>
+    public string VerbatimName { get; set; } = null!;
+
+    /// <summary>The measured value, copied verbatim from the source cell (never generated).</summary>
+    public string Value { get; set; } = null!;
+
+    /// <summary>Unit as printed, if any — copied verbatim.</summary>
+    public string? Unit { get; set; }
+
+    /// <summary>Reference range as printed, if any — copied verbatim.</summary>
+    public string? ReferenceRange { get; set; }
+
+    /// <summary>Flag as printed (e.g. HIGH/LOW), if any — copied verbatim.</summary>
+    public string? Flag { get; set; }
+
+    /// <summary>Provenance: the extracted table this row came from.</summary>
+    public int TableIndex { get; set; }
+
+    /// <summary>Provenance: the row within that table.</summary>
+    public int RowIndex { get; set; }
 }
 
 /// <summary>
@@ -157,7 +217,7 @@ public class Chunk
     /// <summary>Language of the chunk text (el/en).</summary>
     public string? Language { get; set; }
 
-    /// <summary>What this text is: dialog, note or summary (labPanel, imagingReport planned).</summary>
+    /// <summary>What this text is: dialog, note, summary, labPanel or imagingReport.</summary>
     public string ChunkKind { get; set; } = null!;
 
     /// <summary>Type-specific provenance as JSON — for transcripts the line range, e.g. {"startLine":0,"endLine":3}.</summary>
@@ -171,4 +231,12 @@ public class Chunk
 
     /// <summary>The pgvector embedding of blurb + verbatim text (or the summary text).</summary>
     public Vector Embedding { get; set; } = null!;
+
+    /// <summary>
+    /// The embedding model that produced this chunk's vector — the write/read
+    /// contract in the metadata spine. Recording it per chunk is what makes an
+    /// embedding-model change a managed re-embedding migration instead of silent
+    /// search corruption: a query can tell which vectors a given model produced.
+    /// </summary>
+    public string? EmbeddingModel { get; set; }
 }

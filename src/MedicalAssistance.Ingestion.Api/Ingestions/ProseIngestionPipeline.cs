@@ -3,49 +3,43 @@ using System.Text.Json;
 using MedicalAssistance.Ingestion.Api.Realtime;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
-using Pgvector;
 
 namespace MedicalAssistance.Ingestion.Api.Ingestions;
 
 /// <summary>
 /// The prose ingestion pipeline shared by every free-text Document Type:
-/// boundaries-only LLM chunking (ADR-0002) → enrich → batched embed → atomic
-/// store. The numbered non-empty lines of the body are sent to a chunking agent
-/// that returns only line ranges, a blurb per chunk, and a summary; the chunk
-/// text is assembled here, in code, verbatim from those lines — a generative
-/// model never produces a stored word of patient text.
+/// boundaries-only LLM chunking (ADR-0002) → enrich → (embed + atomic store, via
+/// <see cref="DocumentChunkCommitter"/>). The numbered non-empty lines of the body
+/// are sent to a chunking agent that returns only line ranges, a blurb per chunk,
+/// and a summary; the chunk text is assembled here, in code, verbatim from those
+/// lines — a generative model never produces a stored word of patient text.
 ///
 /// A strategy supplies only what differs between types: the body text, the chunk
-/// kind stamped on it ('dialog' for a transcript, 'note' for a doctor's note),
-/// the agent instructions to build from (ADR-0008), and the prompt header. The
-/// identity, dedup, supersede and status machinery is identical for all of them,
-/// which is the point of one pipeline rather than one per type.
+/// kind stamped on it ('dialog' for a transcript, 'note' for a doctor's note), the
+/// agent instructions to build from (ADR-0008), and the prompt header.
 /// </summary>
 public sealed class ProseIngestionPipeline
 {
     private static readonly JsonSerializerOptions PlanJson = new(JsonSerializerDefaults.Web);
 
     private readonly IChatClient _chatClient;
-    private readonly IEmbeddingGenerator<string, Embedding<float>> _embeddingGenerator;
-    private readonly IngestionStore _store;
     private readonly AgentInstructionProvider _instructionProvider;
     private readonly IngestionStatusPublisher _statusPublisher;
+    private readonly DocumentChunkCommitter _committer;
     private readonly ChunkSizeGuardrails _sizeGuardrails;
     private readonly string _chatModel;
 
     public ProseIngestionPipeline(
         IChatClient chatClient,
-        IEmbeddingGenerator<string, Embedding<float>> embeddingGenerator,
-        IngestionStore store,
         AgentInstructionProvider instructionProvider,
         IngestionStatusPublisher statusPublisher,
+        DocumentChunkCommitter committer,
         IConfiguration configuration)
     {
         _chatClient = chatClient;
-        _embeddingGenerator = embeddingGenerator;
-        _store = store;
         _instructionProvider = instructionProvider;
         _statusPublisher = statusPublisher;
+        _committer = committer;
         _chatModel = (chatClient.GetService(typeof(ChatClientMetadata)) as ChatClientMetadata)?.DefaultModelId
             ?? "unknown";
 
@@ -58,7 +52,7 @@ public sealed class ProseIngestionPipeline
 
     /// <summary>
     /// Runs the whole pipeline for one document: chunk (boundaries-only) → enrich →
-    /// embed (batched) → atomic store. Every chunk of the body is stamped with
+    /// embed + atomic store. Every chunk of the body is stamped with
     /// <paramref name="bodyChunkKind"/>; the summary is stored as its own chunk.
     /// </summary>
     public async Task RunAsync(
@@ -68,7 +62,8 @@ public sealed class ProseIngestionPipeline
         string bodyChunkKind,
         string agentInstructionName,
         string promptHeader,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? imageLink = null)
     {
         // Built per run from the instructions loaded at startup (ADR-0008); the
         // version is stamped onto the completed ingestion so a quality regression
@@ -78,32 +73,16 @@ public sealed class ProseIngestionPipeline
 
         var lines = SplitIntoLines(body);
 
-        await PublishStageAsync(ingestionId, request, IngestionStages.Chunking, ct);
+        await _statusPublisher.PublishAsync(
+            ingestionId, IngestionIdentity.Of(request), IngestionStages.Chunking, ct: ct);
         var plan = await RequestChunkPlanAsync(chunkingAgent, lines, promptHeader, ct);
         var sizedChunks = _sizeGuardrails.Apply(lines, plan.Chunks);
-        var chunks = AssembleChunks(lines, sizedChunks, plan.Summary, bodyChunkKind);
+        var chunks = AssembleChunks(lines, sizedChunks, plan.Summary, bodyChunkKind, imageLink);
 
-        await PublishStageAsync(ingestionId, request, IngestionStages.Embedding, ct);
-        var embeddings = await _embeddingGenerator.GenerateAsync(
-            chunks.Select(c => c.EmbeddingInput).ToList(), cancellationToken: ct);
-        var records = chunks
-            .Select((chunk, i) => new ChunkToStore(
-                i, chunk.Kind, chunk.VerbatimText, chunk.ContextBlurb, chunk.SourceRefJson,
-                new Vector(embeddings[i].Vector)))
-            .ToList();
-
-        await PublishStageAsync(ingestionId, request, IngestionStages.Storing, ct);
-        var documentId = DocumentIdentity.For(request);
-        await _store.CompleteWithChunksAsync(
-            ingestionId, documentId, request, records, instructionVersion, _chatModel, ct);
-
-        // Announced only after the commit: the doctor is told the document is
-        // searchable when it genuinely is.
-        await PublishStageAsync(ingestionId, request, IngestionStages.Completed, ct);
+        await _committer.CommitAsync(
+            ingestionId, request, chunks, instructionVersion, _chatModel,
+            analytes: null, analytesExtracted: null, ct);
     }
-
-    private Task PublishStageAsync(Guid ingestionId, IngestionRequest request, string stage, CancellationToken ct) =>
-        _statusPublisher.PublishAsync(ingestionId, IngestionIdentity.Of(request), stage, ct: ct);
 
     private static IReadOnlyList<string> SplitIntoLines(string body) =>
         body
@@ -136,7 +115,7 @@ public sealed class ProseIngestionPipeline
         ChunkPlan? plan;
         try
         {
-            plan = JsonSerializer.Deserialize<ChunkPlan>(StripCodeFences(response.Text), PlanJson);
+            plan = JsonSerializer.Deserialize<ChunkPlan>(AgentResponse.Unfence(response.Text), PlanJson);
         }
         catch (JsonException)
         {
@@ -187,7 +166,8 @@ public sealed class ProseIngestionPipeline
     }
 
     private static List<AssembledChunk> AssembleChunks(
-        IReadOnlyList<string> lines, IReadOnlyList<PlannedChunk> plannedChunks, string summary, string bodyChunkKind)
+        IReadOnlyList<string> lines, IReadOnlyList<PlannedChunk> plannedChunks, string summary, string bodyChunkKind,
+        string? imageLink)
     {
         var chunks = new List<AssembledChunk>();
         foreach (var planned in plannedChunks)
@@ -199,58 +179,40 @@ public sealed class ProseIngestionPipeline
                 Kind: bodyChunkKind,
                 VerbatimText: verbatim,
                 ContextBlurb: planned.ContextBlurb,
-                SourceRefJson: $$"""{"startLine":{{planned.StartLine}},"endLine":{{planned.EndLine}}}""",
+                SourceRefJson: SourceRef(planned.StartLine, planned.EndLine, imageLink),
                 EmbeddingInput: $"{planned.ContextBlurb}\n\n{verbatim}"));
         }
 
-        // The summary is a single generated paragraph, not source text — the
-        // size guardrails deliberately never touch it, and its kind is 'summary'
-        // regardless of the body's kind.
+        // The summary is a single generated paragraph, not source text — the size
+        // guardrails deliberately never touch it, and its kind is 'summary'
+        // regardless of the body's kind. It carries the image link too, so every
+        // chunk of an imaging report is one tap from the image (ADR-0005).
         chunks.Add(new AssembledChunk(
             Kind: "summary",
             VerbatimText: summary,
             ContextBlurb: null,
-            SourceRefJson: null,
+            SourceRefJson: imageLink is null ? null : SourceRef(null, null, imageLink),
             EmbeddingInput: summary));
         return chunks;
     }
 
-    /// <summary>
-    /// Unwraps a ```-fenced response, tolerating one that was never closed.
-    ///
-    /// A closing fence is not guaranteed: an answer cut off at the output-token
-    /// limit has an opening fence and nothing else, and long documents make that
-    /// more likely rather than less. The opening fence is removed first and the
-    /// closing one looked for only in what remains, so it can never find the
-    /// opening fence and slice backwards — which used to throw out of here, past
-    /// the JSON handling, and skip the corrective retry meant for bad answers.
-    ///
-    /// Never throws: whatever comes back is handed to the parser, and an
-    /// unreadable response fails as unreadable rather than as a string index.
-    /// </summary>
-    private static string StripCodeFences(string? text)
+    // The provenance JSON on a chunk: a line range for prose, plus the image link
+    // for an imaging report. Built so transcripts and notes (no image link) keep
+    // exactly the {"startLine":..,"endLine":..} shape they had, while an imaging
+    // chunk gains a JSON-escaped "imageLink".
+    private static string SourceRef(int? startLine, int? endLine, string? imageLink)
     {
-        var trimmed = text?.Trim() ?? string.Empty;
-        if (!trimmed.StartsWith("```"))
-            return trimmed;
-
-        // Everything after the opening fence line — which carries the optional
-        // language tag, as in ```json.
-        var firstNewline = trimmed.IndexOf('\n');
-        if (firstNewline < 0)
-            return string.Empty;
-        var body = trimmed[(firstNewline + 1)..];
-
-        // Closing fence if there is one; the whole body if there is not, so a
-        // plan whose fence the model merely forgot is still read.
-        var closingFence = body.LastIndexOf("```", StringComparison.Ordinal);
-        return (closingFence < 0 ? body : body[..closingFence]).Trim();
+        var parts = new List<string>(3);
+        if (startLine is { } start)
+            parts.Add($"\"startLine\":{start}");
+        if (endLine is { } end)
+            parts.Add($"\"endLine\":{end}");
+        if (imageLink is not null)
+            parts.Add($"\"imageLink\":{JsonSerializer.Serialize(imageLink)}");
+        return $"{{{string.Join(",", parts)}}}";
     }
 
     private sealed record ChunkPlan(List<PlannedChunk> Chunks, string Summary);
-
-    private sealed record AssembledChunk(
-        string Kind, string VerbatimText, string? ContextBlurb, string? SourceRefJson, string EmbeddingInput);
 }
 
 /// <summary>

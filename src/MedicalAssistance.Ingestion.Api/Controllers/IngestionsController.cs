@@ -12,7 +12,11 @@ namespace MedicalAssistance.Ingestion.Api.Controllers;
 [Route("ingestions")]
 [Produces("application/json")]
 public sealed class IngestionsController(
-    IngestionStore store, IngestionQueue queue, IngestionStrategyRegistry strategies) : ControllerBase
+    IngestionStore store,
+    IngestionQueue queue,
+    IngestionStrategyRegistry strategies,
+    IIngestedDocumentArchive archive,
+    IConfiguration configuration) : ControllerBase
 {
     /// <summary>Submits a clinical Document for ingestion.</summary>
     /// <remarks>
@@ -58,7 +62,8 @@ public sealed class IngestionsController(
     {
         // Validate before anything durable happens: an invalid submission must
         // leave no trace at all, not a Failed row discovered minutes later.
-        var errors = IngestionRequestValidation.Validate(request, strategies.SupportedTypes);
+        var maxPdfBytes = configuration.GetValue(PdfIntake.MaxBytesConfigurationKey, PdfIntake.DefaultMaxBytes);
+        var errors = IngestionRequestValidation.Validate(request, strategies.SupportedTypes, maxPdfBytes);
         if (errors.Count > 0)
             return ValidationProblem(new ValidationProblemDetails(errors));
 
@@ -113,6 +118,11 @@ public sealed class IngestionsController(
         }
 
         var ingestionId = await store.CreateQueuedAsync(request, ct);
+
+        // Archived before it is handed to a worker, so the landing-zone copy exists
+        // before ingestion. Best-effort by contract — it never fails the upload.
+        await archive.ArchiveAsync(ingestionId, request, ct);
+
         await queue.EnqueueAsync(ingestionId, ct);
         return Accepted(LocationOf(ingestionId), new IngestionAccepted { IngestionId = ingestionId });
     }

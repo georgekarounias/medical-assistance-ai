@@ -23,7 +23,13 @@ public sealed class DeterministicEmbeddingGenerator(int dimensions) : IEmbedding
         return Task.FromResult(new GeneratedEmbeddings<Embedding<float>>(embeddings));
     }
 
-    public object? GetService(Type serviceType, object? serviceKey = null) => null;
+    /// <summary>The model name a real embedding provider would report — stamped on every chunk it produces.</summary>
+    public const string ModelId = "test-embedding-model";
+
+    public object? GetService(Type serviceType, object? serviceKey = null) =>
+        serviceType == typeof(EmbeddingGeneratorMetadata)
+            ? new EmbeddingGeneratorMetadata("deterministic", defaultModelId: ModelId)
+            : null;
 
     public void Dispose()
     {

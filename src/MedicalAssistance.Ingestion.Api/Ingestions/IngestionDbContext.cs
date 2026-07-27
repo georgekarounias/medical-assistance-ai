@@ -34,6 +34,9 @@ public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> opti
     /// <summary>The append-only audit of GDPR erasures — the one thing an erasure leaves behind.</summary>
     public DbSet<ErasureLogEntry> ErasureLog => Set<ErasureLogEntry>();
 
+    /// <summary>Verified LabReport analyte rows (Tier 2), stored relationally beside the vector chunks.</summary>
+    public DbSet<AnalyteResult> AnalyteResults => Set<AnalyteResult>();
+
     /// <inheritdoc />
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -60,6 +63,7 @@ public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> opti
             entity.Property(i => i.Payload).HasColumnName("payload").HasColumnType("jsonb");
             entity.Property(i => i.InstructionVersion).HasColumnName("instruction_version");
             entity.Property(i => i.ChatModel).HasColumnName("chat_model");
+            entity.Property(i => i.AnalytesExtracted).HasColumnName("analytes_extracted");
             entity.Property(i => i.CreatedAt).HasColumnName("created_at");
             entity.Property(i => i.UpdatedAt).HasColumnName("updated_at");
 
@@ -129,11 +133,42 @@ public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> opti
             entity.Property(c => c.ContextBlurb).HasColumnName("context_blurb");
             entity.Property(c => c.Embedding).HasColumnName("embedding")
                 .HasColumnType($"vector({EmbeddingDimensions})");
+            entity.Property(c => c.EmbeddingModel).HasColumnName("embedding_model");
             entity.HasOne<IngestionRecord>().WithMany().HasForeignKey(c => c.IngestionId);
             entity.HasIndex(c => c.IngestionId);
 
             // Both supersede and un-ingest delete a document's chunks by this id.
             entity.HasIndex(c => c.DocumentId);
+        });
+
+        modelBuilder.Entity<AnalyteResult>(entity =>
+        {
+            entity.ToTable("analyte_results");
+            entity.HasKey(a => a.Id);
+            entity.Property(a => a.Id).HasColumnName("id");
+            entity.Property(a => a.IngestionId).HasColumnName("ingestion_id");
+            entity.Property(a => a.DocumentId).HasColumnName("document_id");
+            entity.Property(a => a.PatientId).HasColumnName("patient_id");
+            entity.Property(a => a.DoctorId).HasColumnName("doctor_id");
+            entity.Property(a => a.CanonicalName).HasColumnName("canonical_name");
+            entity.Property(a => a.VerbatimName).HasColumnName("verbatim_name");
+            entity.Property(a => a.Value).HasColumnName("value");
+            entity.Property(a => a.Unit).HasColumnName("unit");
+            entity.Property(a => a.ReferenceRange).HasColumnName("reference_range");
+            entity.Property(a => a.Flag).HasColumnName("flag");
+            entity.Property(a => a.TableIndex).HasColumnName("table_index");
+            entity.Property(a => a.RowIndex).HasColumnName("row_index");
+            entity.HasOne<IngestionRecord>().WithMany().HasForeignKey(a => a.IngestionId);
+
+            // Supersede and un-ingest remove a document's analyte rows by this id, in
+            // the same transaction as its chunks; a trend query filters by patient.
+            entity.HasIndex(a => a.DocumentId);
+            entity.HasIndex(a => a.PatientId);
+            entity.HasIndex(a => a.IngestionId);
+
+            // The queries these rows exist for: one analyte's values for one patient,
+            // over time — "HbA1c over the year".
+            entity.HasIndex(a => new { a.PatientId, a.CanonicalName });
         });
     }
 }

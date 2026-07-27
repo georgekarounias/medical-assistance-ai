@@ -495,9 +495,12 @@ public sealed class IngestionStore(IngestionDbContext db)
         string patientId, string erasedBy, CancellationToken ct = default) =>
         InTransactionAsync(async innerCt =>
         {
-            // Chunks first: each carries a foreign key to its ingestion, so the
-            // ingestion rows cannot go until nothing points at them.
+            // Chunks and analyte rows first: each carries a foreign key to its
+            // ingestion, so the ingestion rows cannot go until nothing points at
+            // them. Analyte rows are a patient's clinical numbers and are erased
+            // with everything else (T31).
             var chunksErased = await db.Chunks.Where(c => c.PatientId == patientId).ExecuteDeleteAsync(innerCt);
+            await db.AnalyteResults.Where(a => a.PatientId == patientId).ExecuteDeleteAsync(innerCt);
             var ingestionsErased = await db.Ingestions.Where(i => i.PatientId == patientId).ExecuteDeleteAsync(innerCt);
 
             db.ErasureLog.Add(new ErasureLogEntry
@@ -568,8 +571,10 @@ public sealed class IngestionStore(IngestionDbContext db)
 
             // The chunks carry the same assembled id, so this removes exactly the
             // live version's chunks and no sibling's — atomically with the flip
-            // above.
+            // above. A LabReport's analyte rows carry the same id and go with them,
+            // so un-ingest leaves nothing of the document's clinical content (T31).
             await db.Chunks.Where(c => c.DocumentId == documentId).ExecuteDeleteAsync(innerCt);
+            await db.AnalyteResults.Where(a => a.DocumentId == documentId).ExecuteDeleteAsync(innerCt);
 
             return (UnIngestOutcome.Deleted, deletedAt);
         }, ct);
@@ -585,7 +590,8 @@ public sealed class IngestionStore(IngestionDbContext db)
     /// </summary>
     public Task CompleteWithChunksAsync(
         Guid ingestionId, string documentId, IngestionRequest request, IReadOnlyList<ChunkToStore> chunks,
-        int instructionVersion, string chatModel, CancellationToken ct = default) =>
+        int? instructionVersion, string? chatModel, string? embeddingModel,
+        IReadOnlyList<VerifiedAnalyte>? analytes, bool? analytesExtracted, CancellationToken ct = default) =>
         InTransactionAsync(async innerCt =>
         {
             var ingestion = await db.Ingestions.FirstAsync(i => i.Id == ingestionId, innerCt);
@@ -608,11 +614,34 @@ public sealed class IngestionStore(IngestionDbContext db)
                 VerbatimText = chunk.VerbatimText,
                 ContextBlurb = chunk.ContextBlurb,
                 Embedding = chunk.Embedding,
+                EmbeddingModel = embeddingModel,
             }));
+
+            // Analyte rows commit in the same transaction as the chunks (T31): a
+            // document never holds a chunk set without its verified analytes, or the
+            // reverse, and a Correction's supersede removes both together below.
+            if (analytes is not null)
+                db.AnalyteResults.AddRange(analytes.Select(analyte => new AnalyteResult
+                {
+                    Id = Guid.NewGuid(),
+                    IngestionId = ingestionId,
+                    DocumentId = documentId,
+                    PatientId = request.PatientId,
+                    DoctorId = request.DoctorId,
+                    CanonicalName = analyte.CanonicalName,
+                    VerbatimName = analyte.VerbatimName,
+                    Value = analyte.Value,
+                    Unit = analyte.Unit,
+                    ReferenceRange = analyte.ReferenceRange,
+                    Flag = analyte.Flag,
+                    TableIndex = analyte.TableIndex,
+                    RowIndex = analyte.RowIndex,
+                }));
 
             ingestion.Status = "Completed";
             ingestion.InstructionVersion = instructionVersion;
             ingestion.ChatModel = chatModel;
+            ingestion.AnalytesExtracted = analytesExtracted;
             ingestion.UpdatedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(innerCt);
         }, ct);
@@ -638,6 +667,13 @@ public sealed class IngestionStore(IngestionDbContext db)
             .Where(c => c.DocumentId == documentId && c.PatientId == request.PatientId)
             .ExecuteDeleteAsync(ct);
 
+        // A LabReport's analyte rows are part of the version being replaced, so they
+        // go with its chunks — otherwise a corrected report would keep the previous
+        // version's numbers in the analyte table (T31).
+        await db.AnalyteResults
+            .Where(a => a.DocumentId == documentId && a.PatientId == request.PatientId)
+            .ExecuteDeleteAsync(ct);
+
         await db.Ingestions
             .Where(i => i.Id != ingestionId
                         && i.Status == "Completed"
@@ -660,8 +696,8 @@ public sealed class IngestionStore(IngestionDbContext db)
     /// identifier is still recognised as already ingested. Everything else is in
     /// scope: the patient and doctor (so one patient's document can never dedup
     /// against another's), the clinical date and language (so correcting them
-    /// re-ingests), and the body itself — a transcript's Transcript or a note's
-    /// Text, whichever the type carries.
+    /// re-ingests), and the body itself — a transcript's Transcript, a note's Text,
+    /// or a report's PdfContent, whichever the type carries.
     /// </summary>
     private static (string Payload, string ContentHash) SerializeAndHash(IngestionRequest request)
     {
@@ -676,6 +712,8 @@ public sealed class IngestionStore(IngestionDbContext db)
                 request.Language,
                 request.Transcript,
                 request.Text,
+                request.PdfContent,
+                request.ImageLink,
             },
             PayloadJson);
         return (payload, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content))));

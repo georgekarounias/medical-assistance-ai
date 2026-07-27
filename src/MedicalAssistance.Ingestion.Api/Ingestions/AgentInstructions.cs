@@ -32,6 +32,12 @@ public static class AgentNames
 
     /// <summary>The doctor-note chunking agent.</summary>
     public const string DoctorNoteChunker = "DoctorNoteChunker";
+
+    /// <summary>The LabReport Tier 2 analyte-mapping agent (classifies columns + canonical names only).</summary>
+    public const string LabAnalyteMapper = "LabAnalyteMapper";
+
+    /// <summary>The imaging-report chunking agent (chunks a radiologist's extracted findings).</summary>
+    public const string ImagingReportChunker = "ImagingReportChunker";
 }
 
 /// <summary>

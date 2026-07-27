@@ -35,6 +35,8 @@ public static class DocumentIdentity
                 $"{request.DoctorId}#{request.PatientId}#{request.SessionId}#{request.SequenceNumber}",
             DocumentTypes.DoctorNote =>
                 $"{request.DoctorId}#{request.PatientId}#{request.NoteId}",
+            DocumentTypes.LabReport or DocumentTypes.ImagingReport =>
+                $"{request.DoctorId}#{request.PatientId}#{request.ReportId}",
             _ => throw new NotSupportedException(
                 $"No document identity is defined for '{request.DocumentType}'."),
         };

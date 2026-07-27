@@ -3,6 +3,7 @@ using System;
 using MedicalAssistance.Ingestion.Api.Ingestions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Pgvector;
@@ -12,9 +13,11 @@ using Pgvector;
 namespace MedicalAssistance.Ingestion.Api.Ingestions.Migrations
 {
     [DbContext(typeof(IngestionDbContext))]
-    partial class IngestionDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260725234334_SeedImagingChunker")]
+    partial class SeedImagingChunker
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -165,10 +168,6 @@ namespace MedicalAssistance.Ingestion.Api.Ingestions.Migrations
                         .IsRequired()
                         .HasColumnType("vector(3072)")
                         .HasColumnName("embedding");
-
-                    b.Property<string>("EmbeddingModel")
-                        .HasColumnType("text")
-                        .HasColumnName("embedding_model");
 
                     b.Property<Guid>("IngestionId")
                         .HasColumnType("uuid")

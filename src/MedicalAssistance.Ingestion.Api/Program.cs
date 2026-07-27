@@ -46,6 +46,21 @@ if (workerCount * connectionsPerWorker > maxPoolSize / 2)
         "ConnectionStrings:Postgres.");
 }
 
+// Dimension guard (T33): the vector column's width is fixed by the migration that
+// created it (IngestionDbContext.EmbeddingDimensions). If a real embedding provider
+// is configured with a different dimension, the mismatch would otherwise surface
+// only as failed inserts at runtime — so refuse to start. Changing the embedding
+// dimension is a schema migration that re-embeds what is stored, not a config
+// change, because existing vectors do not resize.
+if (builder.Configuration.GetValue<int?>(AzureAi.EmbeddingDimensionsConfigurationKey) is { } configuredDimensions
+    && configuredDimensions != IngestionDbContext.EmbeddingDimensions)
+{
+    throw new InvalidOperationException(
+        $"{AzureAi.EmbeddingDimensionsConfigurationKey} is {configuredDimensions}, but the vector column is " +
+        $"{IngestionDbContext.EmbeddingDimensions}-dimensional (fixed by migration). They must match — changing " +
+        "the embedding dimension is a re-embedding migration, not a configuration change.");
+}
+
 var dataSourceBuilder = new NpgsqlDataSourceBuilder(connectionString);
 dataSourceBuilder.UseVector();
 var dataSource = dataSourceBuilder.Build();
@@ -131,10 +146,41 @@ builder.Services.AddScoped<IngestionQueue>();
 // consult. A new Document Type is one more AddScoped line here — nothing else.
 // The prose strategies (transcript, note) are thin adapters over one shared
 // pipeline; they differ only in text source, chunk kind, and agent instructions.
+builder.Services.AddScoped<DocumentChunkCommitter>();
 builder.Services.AddScoped<ProseIngestionPipeline>();
 builder.Services.AddScoped<IIngestionStrategy, TranscriptIngestionStrategy>();
 builder.Services.AddScoped<IIngestionStrategy, DoctorNoteStrategy>();
+builder.Services.AddScoped<IIngestionStrategy, LabReportStrategy>();
+builder.Services.AddScoped<IIngestionStrategy, ImagingReportStrategy>();
 builder.Services.AddScoped<IngestionStrategyRegistry>();
+
+// The extraction seam (ADR-0005): one provider-neutral interface for turning a
+// PDF into text + table cell grids. Unconfigured by default so the app boots with
+// no Azure account and fails loudly only if a PDF is actually processed; a real
+// Azure Document Intelligence adapter replaces it by configuration, a fake by DI.
+builder.Services.TryAddSingleton<IDocumentExtractor>(new UnconfiguredDocumentExtractor());
+
+// Real providers replace the placeholders above when their configuration is present
+// — provider choice is configuration, not architecture. Plain OpenAI (chat +
+// embedding) is registered first, then the Azure providers (chat + embedding;
+// ADR-0005 extraction). Order is deterministic: both beat the placeholder as later
+// registrations, and Azure — added last — wins when both a plain-OpenAI and an Azure
+// section are configured for the same seam.
+builder.Services.AddOpenAiProviders(builder.Configuration);
+builder.Services.AddAzureProviders(builder.Configuration);
+
+// The document archive: a local landing zone that saves each submitted document
+// to a filesystem folder structure before ingestion, active only when a root path
+// is configured (for local testing). Off by default — the database payload is the
+// system of record either way.
+var documentArchiveRoot = builder.Configuration.GetValue<string>("DocumentArchive:LocalRootPath");
+if (!string.IsNullOrWhiteSpace(documentArchiveRoot))
+    builder.Services.AddSingleton<IIngestedDocumentArchive>(sp =>
+        new LocalFileSystemDocumentArchive(
+            documentArchiveRoot, sp.GetRequiredService<ILogger<LocalFileSystemDocumentArchive>>()));
+else
+    builder.Services.AddSingleton<IIngestedDocumentArchive, NullDocumentArchive>();
+
 builder.Services.AddSingleton(Channel.CreateUnbounded<Guid>());
 builder.Services.AddHostedService<IngestionWorker>();
 builder.Services.AddHostedService<IngestionRecoverySweep>();

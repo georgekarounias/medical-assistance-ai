@@ -14,6 +14,12 @@ public static class DocumentTypes
 
     /// <summary>A typed clinical note written by the doctor about a patient.</summary>
     public const string DoctorNote = "DoctorNote";
+
+    /// <summary>A lab report — a digitally generated PDF of test results.</summary>
+    public const string LabReport = "LabReport";
+
+    /// <summary>An imaging report — a digitally generated PDF of a radiologist's findings.</summary>
+    public const string ImagingReport = "ImagingReport";
 }
 
 /// <summary>
@@ -32,7 +38,7 @@ public static class IngestionRequestValidation
     /// door accepts, passed in so validation and routing can never disagree.
     /// </summary>
     public static Dictionary<string, string[]> Validate(
-        IngestionRequest request, IReadOnlyCollection<string> supportedTypes)
+        IngestionRequest request, IReadOnlyCollection<string> supportedTypes, int maxPdfBytes)
     {
         var errors = new Dictionary<string, string[]>();
 
@@ -60,6 +66,14 @@ public static class IngestionRequestValidation
                 break;
             case DocumentTypes.DoctorNote:
                 ValidateNote(request, errors);
+                break;
+            case DocumentTypes.LabReport:
+                ValidatePdfReport(request, errors, maxPdfBytes);
+                break;
+            case DocumentTypes.ImagingReport:
+                ValidatePdfReport(request, errors, maxPdfBytes);
+                if (string.IsNullOrWhiteSpace(request.ImageLink))
+                    errors["imageLink"] = ["An image link is required for ImagingReport documents."];
                 break;
         }
 
@@ -102,5 +116,21 @@ public static class IngestionRequestValidation
 
         if (string.IsNullOrWhiteSpace(request.Text))
             errors["text"] = ["A note with at least one non-empty line of text is required."];
+    }
+
+    /// <summary>
+    /// A PDF-backed report (lab or imaging) is identified by its backend-assigned
+    /// reportId, so that is mandatory from the first submission for the same reason
+    /// a transcript's session key is. The PDF payload itself is required and
+    /// size-capped at the door (ADR-0005), so an oversized or malformed document is
+    /// refused as a 400 rather than failing deep in extraction.
+    /// </summary>
+    private static void ValidatePdfReport(IngestionRequest request, Dictionary<string, string[]> errors, int maxPdfBytes)
+    {
+        if (string.IsNullOrWhiteSpace(request.ReportId))
+            errors["reportId"] = ["A report id is required for this document type."];
+
+        if (PdfIntake.Validate(request.PdfContent, maxPdfBytes) is { } pdfError)
+            errors["pdfContent"] = [pdfError];
     }
 }
