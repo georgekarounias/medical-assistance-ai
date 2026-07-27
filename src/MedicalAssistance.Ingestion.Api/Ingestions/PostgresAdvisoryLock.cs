@@ -26,6 +26,23 @@ public sealed class PostgresAdvisoryLock : IAsyncDisposable
     /// </summary>
     public const long SchemaMigrationKey = 6_941_233_071_002;
 
+    /// <summary>
+    /// A single-key lock that serializes rolling-summary regeneration for one
+    /// patient, so two ingestions of the same patient completing at once cannot
+    /// interleave into a stale overview (the later writer would otherwise clobber
+    /// the fuller one). The single-key space is used deliberately: per-ingestion
+    /// ownership lives in the two-key space that <see cref="HeldKeysAsync"/> reports
+    /// to the recovery sweep, and a patient lock must never read as an ingestion.
+    /// Folding a patient id onto <see cref="SchemaMigrationKey"/> is astronomically
+    /// unlikely, and even a collision would only make one regeneration wait behind a
+    /// migration — never a wrong result.
+    /// </summary>
+    public static long PatientSummaryKey(string patientId)
+    {
+        var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(patientId));
+        return BinaryPrimitives.ReadInt64LittleEndian(hash);
+    }
+
     private readonly NpgsqlConnection _connection;
     private readonly string _unlockSql;
     private readonly object[] _keys;

@@ -108,6 +108,14 @@ public sealed class IngestionWorker(
                     .GetRequiredService<IngestionStrategyRegistry>()
                     .For(request.DocumentType);
                 await strategy.IngestAsync(ingestionId, request, ct);
+
+                // The document is committed and searchable; now refresh the patient's
+                // rolling overview from the full current set. Best-effort by contract —
+                // it swallows its own failures, so it can never turn a completed
+                // ingestion into a failed one.
+                await scope.ServiceProvider
+                    .GetRequiredService<PatientSummaryService>()
+                    .RegenerateAsync(request.PatientId, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {

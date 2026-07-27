@@ -105,6 +105,13 @@ public sealed record IngestionStatus
     /// <summary>Why the ingestion failed; present only when <see cref="Status"/> is <c>Failed</c>.</summary>
     public string? ErrorMessage { get; init; }
 
+    /// <summary>
+    /// The LLM-written summary of this Document, present once it has <c>Completed</c>
+    /// and its type produces one (prose types do; a LabReport does not). Directly
+    /// readable here without running a vector search over the stored summary chunk.
+    /// </summary>
+    public string? Summary { get; init; }
+
     /// <summary>Creates a status snapshot.</summary>
     public IngestionStatus()
     {
@@ -112,11 +119,12 @@ public sealed record IngestionStatus
 
     /// <summary>Creates a status snapshot with all fields.</summary>
     [SetsRequiredMembers]
-    public IngestionStatus(Guid ingestionId, string status, string? errorMessage)
+    public IngestionStatus(Guid ingestionId, string status, string? errorMessage, string? summary = null)
     {
         IngestionId = ingestionId;
         Status = status;
         ErrorMessage = errorMessage;
+        Summary = summary;
     }
 }
 

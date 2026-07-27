@@ -37,6 +37,9 @@ public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> opti
     /// <summary>Verified LabReport analyte rows (Tier 2), stored relationally beside the vector chunks.</summary>
     public DbSet<AnalyteResult> AnalyteResults => Set<AnalyteResult>();
 
+    /// <summary>One rolling overview per patient, regenerated after each ingestion.</summary>
+    public DbSet<PatientSummary> PatientSummaries => Set<PatientSummary>();
+
     /// <inheritdoc />
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -61,6 +64,7 @@ public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> opti
             entity.Property(i => i.Attempts).HasColumnName("attempts");
             entity.Property(i => i.ContentHash).HasColumnName("content_hash");
             entity.Property(i => i.Payload).HasColumnName("payload").HasColumnType("jsonb");
+            entity.Property(i => i.Summary).HasColumnName("summary");
             entity.Property(i => i.InstructionVersion).HasColumnName("instruction_version");
             entity.Property(i => i.ChatModel).HasColumnName("chat_model");
             entity.Property(i => i.AnalytesExtracted).HasColumnName("analytes_extracted");
@@ -139,6 +143,28 @@ public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> opti
 
             // Both supersede and un-ingest delete a document's chunks by this id.
             entity.HasIndex(c => c.DocumentId);
+
+            // The retrieval spine: every similarity search is patient-scoped (the
+            // security boundary), optionally narrowed to one doctor. Leading with
+            // patient_id makes this one index serve both "this patient" and "this
+            // patient, this doctor", and it also keeps patient erasure — which
+            // deletes chunks by patient_id — off a table scan. The vector ANN index
+            // (HNSW over a halfvec cast) is added by raw SQL in the migration, since
+            // the 3072-dim embedding exceeds pgvector's 2000-dim full-precision HNSW
+            // limit and EF cannot express the cast.
+            entity.HasIndex(c => new { c.PatientId, c.DoctorId });
+        });
+
+        modelBuilder.Entity<PatientSummary>(entity =>
+        {
+            entity.ToTable("patient_summaries");
+            entity.HasKey(p => p.PatientId);
+            entity.Property(p => p.PatientId).HasColumnName("patient_id");
+            entity.Property(p => p.Summary).HasColumnName("summary");
+            entity.Property(p => p.DocumentCount).HasColumnName("document_count");
+            entity.Property(p => p.ChatModel).HasColumnName("chat_model");
+            entity.Property(p => p.InstructionVersion).HasColumnName("instruction_version");
+            entity.Property(p => p.UpdatedAt).HasColumnName("updated_at");
         });
 
         modelBuilder.Entity<AnalyteResult>(entity =>

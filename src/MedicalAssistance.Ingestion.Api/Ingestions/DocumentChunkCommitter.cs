@@ -44,6 +44,7 @@ public sealed class DocumentChunkCommitter(
         string? chatModel,
         IReadOnlyList<VerifiedAnalyte>? analytes,
         bool? analytesExtracted,
+        string? documentSummary,
         CancellationToken ct)
     {
         await PublishStageAsync(ingestionId, request, IngestionStages.Embedding, ct);
@@ -67,7 +68,7 @@ public sealed class DocumentChunkCommitter(
         var documentId = DocumentIdentity.For(request);
         await store.CompleteWithChunksAsync(
             ingestionId, documentId, request, records, instructionVersion, chatModel, embeddingModel,
-            analytes, analytesExtracted, ct);
+            analytes, analytesExtracted, documentSummary, ct);
 
         // Announced only after the commit: the doctor is told the document is
         // searchable when it genuinely is.

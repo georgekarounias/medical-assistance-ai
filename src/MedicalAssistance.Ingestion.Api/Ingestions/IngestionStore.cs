@@ -23,6 +23,17 @@ public sealed record ChunkToStore(
     Vector Embedding);
 
 /// <summary>
+/// One live document as it feeds a patient's rolling summary: its type, its clinical
+/// date, and the per-document summary produced at ingestion (null for a type that
+/// produces none, e.g. a LabReport).
+/// </summary>
+/// <param name="DocumentType">The Document Type, so the overview can weight a transcript differently from a lab report.</param>
+/// <param name="DocumentDate">Clinical date of the document, for ordering the timeline.</param>
+/// <param name="Summary">The document's own summary, or null when its type produces none.</param>
+public sealed record PatientDocumentSummary(
+    string DocumentType, DateTimeOffset? DocumentDate, string? Summary);
+
+/// <summary>
 /// What an Ingestion is about: which Document it concerns and who it belongs to —
 /// the routing information every status event carries, because this service has no
 /// idea which devices are online.
@@ -286,7 +297,7 @@ public sealed class IngestionStore(IngestionDbContext db)
     public Task<IngestionStatus?> GetStatusAsync(Guid id, CancellationToken ct = default) =>
         db.Ingestions.AsNoTracking()
             .Where(i => i.Id == id)
-            .Select(i => new IngestionStatus(i.Id, i.Status, i.ErrorMessage))
+            .Select(i => new IngestionStatus(i.Id, i.Status, i.ErrorMessage, i.Summary))
             .FirstOrDefaultAsync(ct);
 
     /// <summary>
@@ -361,7 +372,7 @@ public sealed class IngestionStore(IngestionDbContext db)
             .Select(i => new
             {
                 i.Id, i.DocumentId, i.DocumentType, i.DoctorId, i.SessionId, i.SequenceNumber,
-                i.DocumentDate, i.Status, i.ErrorMessage, i.UpdatedAt,
+                i.DocumentDate, i.Status, i.ErrorMessage, i.Summary, i.UpdatedAt,
             })
             .ToListAsync(ct);
 
@@ -387,11 +398,66 @@ public sealed class IngestionStore(IngestionDbContext db)
                 DocumentDate = i.DocumentDate,
                 Status = i.Status,
                 ErrorMessage = i.ErrorMessage,
+                Summary = i.Summary,
                 IngestionId = i.Id,
                 UpdatedAt = i.UpdatedAt,
             })
             .OrderByDescending(document => document.DocumentDate ?? document.UpdatedAt)
             .ToList();
+    }
+
+    /// <summary>
+    /// The live documents that feed a patient's rolling summary: one line per
+    /// currently-held document, oldest first, so the overview reads as a timeline. A
+    /// Correction sets the previous version to Superseded and un-ingest to Deleted, so
+    /// filtering to Completed leaves exactly the current version of each document.
+    /// </summary>
+    public async Task<List<PatientDocumentSummary>> ListCompletedDocumentSummariesAsync(
+        string patientId, CancellationToken ct = default) =>
+        await db.Ingestions.AsNoTracking()
+            .Where(i => i.PatientId == patientId && i.Status == "Completed")
+            .OrderBy(i => i.DocumentDate ?? i.UpdatedAt)
+            .Select(i => new PatientDocumentSummary(i.DocumentType, i.DocumentDate, i.Summary))
+            .ToListAsync(ct);
+
+    /// <summary>Returns a patient's rolling overview, or null if none has been generated yet.</summary>
+    public Task<PatientSummary?> GetPatientSummaryAsync(string patientId, CancellationToken ct = default) =>
+        db.PatientSummaries.AsNoTracking()
+            .FirstOrDefaultAsync(p => p.PatientId == patientId, ct);
+
+    /// <summary>
+    /// Writes a patient's freshly regenerated overview, creating the row on the first
+    /// ingestion and replacing it thereafter. Callers serialize regeneration per
+    /// patient with an advisory lock, so this find-then-write cannot race itself into
+    /// two rows for one patient.
+    /// </summary>
+    public async Task UpsertPatientSummaryAsync(
+        string patientId, string summary, int documentCount, string? chatModel, int? instructionVersion,
+        CancellationToken ct = default)
+    {
+        var existing = await db.PatientSummaries.FirstOrDefaultAsync(p => p.PatientId == patientId, ct);
+        if (existing is null)
+        {
+            db.PatientSummaries.Add(new PatientSummary
+            {
+                PatientId = patientId,
+                Summary = summary,
+                DocumentCount = documentCount,
+                ChatModel = chatModel,
+                InstructionVersion = instructionVersion,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            });
+        }
+        else
+        {
+            existing.Summary = summary;
+            existing.DocumentCount = documentCount;
+            existing.ChatModel = chatModel;
+            existing.InstructionVersion = instructionVersion;
+            existing.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        await db.SaveChangesAsync(ct);
     }
 
     /// <summary>Reloads the original submitted payload of an Ingestion — the input for processing and rerun-from-scratch.</summary>
@@ -591,7 +657,8 @@ public sealed class IngestionStore(IngestionDbContext db)
     public Task CompleteWithChunksAsync(
         Guid ingestionId, string documentId, IngestionRequest request, IReadOnlyList<ChunkToStore> chunks,
         int? instructionVersion, string? chatModel, string? embeddingModel,
-        IReadOnlyList<VerifiedAnalyte>? analytes, bool? analytesExtracted, CancellationToken ct = default) =>
+        IReadOnlyList<VerifiedAnalyte>? analytes, bool? analytesExtracted, string? documentSummary,
+        CancellationToken ct = default) =>
         InTransactionAsync(async innerCt =>
         {
             var ingestion = await db.Ingestions.FirstAsync(i => i.Id == ingestionId, innerCt);
@@ -642,6 +709,7 @@ public sealed class IngestionStore(IngestionDbContext db)
             ingestion.InstructionVersion = instructionVersion;
             ingestion.ChatModel = chatModel;
             ingestion.AnalytesExtracted = analytesExtracted;
+            ingestion.Summary = documentSummary;
             ingestion.UpdatedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(innerCt);
         }, ct);

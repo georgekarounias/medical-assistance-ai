@@ -38,6 +38,12 @@ public static class AgentNames
 
     /// <summary>The imaging-report chunking agent (chunks a radiologist's extracted findings).</summary>
     public const string ImagingReportChunker = "ImagingReportChunker";
+
+    /// <summary>The patient-summarizer agent: folds a patient's per-document summaries into one rolling overview.</summary>
+    public const string PatientSummarizer = "PatientSummarizer";
+
+    /// <summary>The lab-report summarizer: writes the per-document summary a LabReport has no chunking agent to produce.</summary>
+    public const string LabReportSummarizer = "LabReportSummarizer";
 }
 
 /// <summary>

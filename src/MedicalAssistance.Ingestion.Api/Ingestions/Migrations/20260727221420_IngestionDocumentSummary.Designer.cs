@@ -3,6 +3,7 @@ using System;
 using MedicalAssistance.Ingestion.Api.Ingestions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Pgvector;
@@ -12,9 +13,11 @@ using Pgvector;
 namespace MedicalAssistance.Ingestion.Api.Ingestions.Migrations
 {
     [DbContext(typeof(IngestionDbContext))]
-    partial class IngestionDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260727221420_IngestionDocumentSummary")]
+    partial class IngestionDocumentSummary
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -349,38 +352,6 @@ namespace MedicalAssistance.Ingestion.Api.Ingestions.Migrations
                     b.HasIndex("SessionId", "SequenceNumber", "ContentHash");
 
                     b.ToTable("ingestions", (string)null);
-                });
-
-            modelBuilder.Entity("MedicalAssistance.Ingestion.Api.Ingestions.PatientSummary", b =>
-                {
-                    b.Property<string>("PatientId")
-                        .HasColumnType("text")
-                        .HasColumnName("patient_id");
-
-                    b.Property<string>("ChatModel")
-                        .HasColumnType("text")
-                        .HasColumnName("chat_model");
-
-                    b.Property<int>("DocumentCount")
-                        .HasColumnType("integer")
-                        .HasColumnName("document_count");
-
-                    b.Property<int?>("InstructionVersion")
-                        .HasColumnType("integer")
-                        .HasColumnName("instruction_version");
-
-                    b.Property<string>("Summary")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("summary");
-
-                    b.Property<DateTimeOffset>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("updated_at");
-
-                    b.HasKey("PatientId");
-
-                    b.ToTable("patient_summaries", (string)null);
                 });
 
             modelBuilder.Entity("MedicalAssistance.Ingestion.Api.Ingestions.AnalyteResult", b =>

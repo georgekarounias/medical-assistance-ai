@@ -147,6 +147,7 @@ builder.Services.AddScoped<IngestionQueue>();
 // The prose strategies (transcript, note) are thin adapters over one shared
 // pipeline; they differ only in text source, chunk kind, and agent instructions.
 builder.Services.AddScoped<DocumentChunkCommitter>();
+builder.Services.AddScoped<PatientSummaryService>();
 builder.Services.AddScoped<ProseIngestionPipeline>();
 builder.Services.AddScoped<IIngestionStrategy, TranscriptIngestionStrategy>();
 builder.Services.AddScoped<IIngestionStrategy, DoctorNoteStrategy>();

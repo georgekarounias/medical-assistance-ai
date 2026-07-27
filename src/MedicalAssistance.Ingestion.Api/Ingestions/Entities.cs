@@ -79,6 +79,15 @@ public class IngestionRecord
     /// </summary>
     public string? Payload { get; set; }
 
+    /// <summary>
+    /// The LLM-written summary of this one Document, produced during ingestion and
+    /// stored on completion so it is directly readable without a vector search — the
+    /// same text also embedded as the document's <c>summary</c> chunk. Null for a
+    /// Document Type that produces no summary (a LabReport renders panels, not prose),
+    /// and null until the ingestion completes.
+    /// </summary>
+    public string? Summary { get; set; }
+
     /// <summary>Version of the agent instructions that produced the stored chunks (set on completion).</summary>
     public int? InstructionVersion { get; set; }
 
@@ -239,4 +248,33 @@ public class Chunk
     /// search corruption: a query can tell which vectors a given model produced.
     /// </summary>
     public string? EmbeddingModel { get; set; }
+}
+
+/// <summary>
+/// One patient's rolling summary: a single evolving overview of everything the
+/// service holds about the patient, regenerated from their per-document summaries
+/// after each ingestion completes. One row per patient (patient_id is the key), so
+/// the newest ingestion's regeneration replaces the previous overview rather than
+/// appending. Derived and best-effort — a summary that fails to regenerate never
+/// fails the ingestion, so this row can lag the documents by one failed attempt.
+/// </summary>
+public class PatientSummary
+{
+    /// <summary>The patient this overview is about — the primary key, one row per patient.</summary>
+    public string PatientId { get; set; } = null!;
+
+    /// <summary>The LLM-written rolling overview across all of the patient's documents.</summary>
+    public string Summary { get; set; } = null!;
+
+    /// <summary>How many documents fed the latest regeneration — provenance for the overview.</summary>
+    public int DocumentCount { get; set; }
+
+    /// <summary>Chat model that produced the latest overview.</summary>
+    public string? ChatModel { get; set; }
+
+    /// <summary>Version of the PatientSummarizer instructions that produced the latest overview.</summary>
+    public int? InstructionVersion { get; set; }
+
+    /// <summary>When the overview was last regenerated, in UTC.</summary>
+    public DateTimeOffset UpdatedAt { get; set; }
 }

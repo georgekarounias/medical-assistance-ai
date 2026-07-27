@@ -81,7 +81,7 @@ public sealed class ProseIngestionPipeline
 
         await _committer.CommitAsync(
             ingestionId, request, chunks, instructionVersion, _chatModel,
-            analytes: null, analytesExtracted: null, ct);
+            analytes: null, analytesExtracted: null, documentSummary: plan.Summary, ct);
     }
 
     private static IReadOnlyList<string> SplitIntoLines(string body) =>

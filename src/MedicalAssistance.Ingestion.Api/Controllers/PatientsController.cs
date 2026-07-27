@@ -43,6 +43,32 @@ public sealed class PatientsController(IngestionStore store) : ControllerBase
         string patientId, [FromQuery] string? doctorId, CancellationToken ct) =>
         Ok(await store.ListPatientDocumentsAsync(patientId, doctorId, ct));
 
+    /// <summary>Returns the patient's rolling overview — one evolving summary across all their documents.</summary>
+    /// <remarks>
+    /// Regenerated after each ingestion from the patient's per-document summaries, so
+    /// it reflects everything currently held about the patient without opening each
+    /// document. Derived and best-effort: it can lag the documents by one failed
+    /// regeneration, and it is absent until the patient's first document has been
+    /// ingested.
+    /// </remarks>
+    /// <param name="patientId">The patient whose overview to return.</param>
+    /// <param name="ct">Cancellation token for the request.</param>
+    /// <response code="200">The patient's rolling overview and when it was last regenerated.</response>
+    /// <response code="404">No overview exists yet — the patient has no completed documents.</response>
+    [HttpGet("{patientId}/summary")]
+    [ProducesResponseType<PatientSummaryView>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetSummary(string patientId, CancellationToken ct) =>
+        await store.GetPatientSummaryAsync(patientId, ct) is { } summary
+            ? Ok(new PatientSummaryView
+            {
+                PatientId = summary.PatientId,
+                Summary = summary.Summary,
+                DocumentCount = summary.DocumentCount,
+                UpdatedAt = summary.UpdatedAt,
+            })
+            : NotFound();
+
     /// <summary>Erases everything the service holds about a patient — the GDPR right to be forgotten.</summary>
     /// <remarks>
     /// Removes every chunk and every ingestion row for the patient, the Deleted

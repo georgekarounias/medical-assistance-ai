@@ -52,9 +52,41 @@ public sealed class LabReportStrategy(
         var (analytes, instructionVersion, chatModel) = await TryMapAnalytesAsync(extracted, ct);
         var analytesExtracted = analytes is not null;
 
+        // A LabReport has no chunking agent to produce a summary the way the prose
+        // types do, so one is written here from the rendered panels — for the
+        // ingestion's summary field and the patient's rolling overview. Best-effort,
+        // like Tier 2: a summariser failure leaves the field null but never fails an
+        // ingestion whose panels already succeeded. The summary is the field only,
+        // never a chunk — the vector store stays verbatim (ADR-0006).
+        var summary = await TrySummarizeAsync(panels, ct);
+
         await committer.CommitAsync(
             ingestionId, request, panels, instructionVersion, chatModel,
-            analytes, analytesExtracted, ct);
+            analytes, analytesExtracted, documentSummary: summary, ct);
+    }
+
+    private async Task<string?> TrySummarizeAsync(IReadOnlyList<AssembledChunk> panels, CancellationToken ct)
+    {
+        try
+        {
+            var (instructions, _) = instructionProvider.Get(AgentNames.LabReportSummarizer);
+            var summarizer = chatClient.AsAIAgent(name: AgentNames.LabReportSummarizer, instructions: instructions);
+
+            var report = string.Join("\n\n", panels.Select(panel => panel.VerbatimText));
+            var response = await summarizer.RunAsync($"Summarise this laboratory report:\n\n{report}", cancellationToken: ct);
+
+            var summary = response.Text.Trim();
+            return summary.Length == 0 ? null : summary;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            // Best-effort: the panels are already committed and searchable.
+            return null;
+        }
     }
 
     private async Task<(IReadOnlyList<VerifiedAnalyte>? Analytes, int Version, string ChatModel)> TryMapAnalytesAsync(

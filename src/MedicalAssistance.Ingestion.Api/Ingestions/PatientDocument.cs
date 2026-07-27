@@ -75,9 +75,35 @@ public sealed record PatientDocument
     /// <summary>Why the latest ingestion failed, when it did.</summary>
     public string? ErrorMessage { get; init; }
 
+    /// <summary>
+    /// The LLM-written summary of this Document, so the list can show what each
+    /// document is about without opening it. Null for a type that produces none
+    /// (LabReport), or until the document has completed.
+    /// </summary>
+    public string? Summary { get; init; }
+
     /// <summary>The most recent Ingestion of this Document, for status or retry.</summary>
     public required Guid IngestionId { get; init; }
 
     /// <summary>When that ingestion last changed state.</summary>
+    public required DateTimeOffset UpdatedAt { get; init; }
+}
+
+/// <summary>
+/// A patient's rolling overview: one evolving summary across every Document held
+/// for them, regenerated after each ingestion.
+/// </summary>
+public sealed record PatientSummaryView
+{
+    /// <summary>The patient this overview is about.</summary>
+    public required string PatientId { get; init; }
+
+    /// <summary>The LLM-written overview across all of the patient's documents.</summary>
+    public required string Summary { get; init; }
+
+    /// <summary>How many documents fed the latest regeneration.</summary>
+    public required int DocumentCount { get; init; }
+
+    /// <summary>When the overview was last regenerated, in UTC.</summary>
     public required DateTimeOffset UpdatedAt { get; init; }
 }
