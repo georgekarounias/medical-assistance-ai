@@ -94,3 +94,45 @@ _Avoid_: Summary (nothing is summarized), narrative
 **Imaging Report**:
 The radiologist's written findings for an imaging study, arriving as a PDF. Only its text is ingested; the pixel data is never ingested, only referenced by link.
 _Avoid_: Image, scan, study
+
+### Retrieval & Chat
+
+**Retrieval**:
+Finding, ranking, and packaging the patient's own Chunks that are relevant to a question, as verbatim evidence with provenance. Vector search over Chunks only; it searches the authoritative pgvector store directly (ADR-0011), never structured Analyte Results.
+_Avoid_: Knowledge lookup, database search
+
+**Evidence Candidate**:
+A raw vector-search hit before the confidence threshold is applied. Once it clears the threshold it is an Evidence Item; below it, it is not evidence.
+_Avoid_: Citation, Evidence Item
+
+**Evidence Item**:
+A Chunk that cleared the confidence threshold, carried with its similarity score and provenance (chunk id, document id/type, clinical date, source location, verbatim text) for grounding an answer. Labeled `[E#]` when placed in the generation prompt.
+_Avoid_: Knowledge claim, generated fact
+
+**Confidence Threshold**:
+The minimum similarity a hit needs to count as an Evidence Item. Below it, retrieval has found nothing usable. Config, calibrated against the golden set (T36) — not a hard-coded constant.
+_Avoid_: Relevance score
+
+**Grounded Answer**:
+The generated clinical answer to a question, asserting only what its Evidence Items support and citing them. Unlike ingested Chunk text, this is model-written prose — but it is verified against evidence before release (ADR-0012).
+_Avoid_: Response, completion
+
+**Insufficient Evidence**:
+The outcome when no Evidence Candidate clears the Confidence Threshold: the assistant states the patient's record does not support an answer instead of answering from general knowledge. A normal, successful result — not an error.
+_Avoid_: Empty result, failure, no answer
+
+**Citation**:
+A reference from a Grounded Answer to the Evidence Item it draws on, verified to point at evidence actually supplied on that turn. Carries source identity, location, and a bounded verbatim quote.
+_Avoid_: Evidence Candidate
+
+**Grounding Rule**:
+A non-overridable requirement that every factual claim in a Grounded Answer be supported by supplied Evidence Items. Unconditional in v1 — there is no persona or style that can weaken it.
+_Avoid_: Writing style, tone
+
+**Query Refinement**:
+An optional LLM rewrite of the question into a cleaner search query, using Conversation Context to resolve pronouns and references. Affects only the query vector, never the answer's grounding; config-gated and fails open to the raw question.
+_Avoid_: Query expansion, answer
+
+**Conversation Context**:
+Bounded prior-turn information (recent messages, an optional prior summary) supplied by the caller as input to interpret the current question. Used for phrasing and refinement only; never an evidence source, never stored by this service, never the basis of a medical fact.
+_Avoid_: Conversation memory (that is the backend's stored state), evidence

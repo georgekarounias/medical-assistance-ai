@@ -6,7 +6,19 @@ database with the `pgvector` extension (see
 schema is owned by EF Core migrations — never by `EnsureCreated` or
 schema-from-model bootstrapping.
 
-## The dev database
+This document is both the **quickstart** (bring the local DB up) and the
+**reference** (how migrations work, the migration list, the vector index). All
+paths are relative to the repo root (`ai-med/medical-assistance-ai`); run the
+commands from a normal PowerShell terminal.
+
+## Prerequisites
+
+- **Docker Desktop** running.
+- **.NET 10 SDK** with EF Core tools (`dotnet tool install --global dotnet-ef`).
+- A **psql** client on PATH (the DB script falls back to
+  `C:\Program Files\PostgreSQL\15\bin\psql.exe` if it can't find one).
+
+## 1. Start the database container
 
 Local development runs against a pgvector Postgres container:
 
@@ -18,26 +30,45 @@ Local development runs against a pgvector Postgres container:
 | Database | `ai_med` |
 | Credentials | `postgres` / `postgres` |
 
-Connection string lives in
+The connection string lives in
 `src/MedicalAssistance.Ingestion.Api/appsettings.Development.json` under
 `ConnectionStrings:Postgres`.
 
 Start it:
 
-```bash
+```powershell
 docker start ai-med-postgres
 ```
 
 If the container does not exist yet, create it once:
 
-```bash
-docker run -d --name ai-med-postgres \
-  -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=ai_med \
+```powershell
+docker run -d --name ai-med-postgres `
+  -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=ai_med `
   -p 5433:5432 pgvector/pgvector:pg17
 ```
 
 The integration test suite does **not** use this container — it spins up its own
 throwaway `pgvector/pgvector:pg17` via Testcontainers (Docker Desktop required).
+
+## 2. Create / reset the schema (run all migrations)
+
+Use `createDB.ps1` to get a clean, fully-migrated database from scratch (e.g.
+after pulling new migrations, or when the local DB has drifted). It drops and
+recreates `ai_med`, then applies **every EF Core migration** in order via
+`dotnet ef database update`:
+
+```powershell
+./database/createDB.ps1
+```
+
+> **Why drop first?** Several migrations are data-only seeds
+> (`SeedAgentInstructions`, `SeedImagingChunker`, `SeedLabReportSummarizer`) that
+> `INSERT` fixed rows. Re-running `dotnet ef database update` against a database
+> that already holds those rows fails on a duplicate-key violation. Dropping first
+> guarantees a clean apply. **On a production database with real data you would
+> NOT drop** — you would only apply the pending migrations
+> (`dotnet ef database update`).
 
 ## How migrations are applied
 
@@ -52,21 +83,8 @@ order (EF orders by the migration's timestamp prefix):
    Npgsql type catalog for this pooled connection was loaded before that, so the
    reload is what makes the `vector` type usable in the same process.
 
-2. **Manually, via `createDB.ps1`.** Use this to get a clean, fully-migrated
-   database from scratch (e.g. after pulling new migrations, or when the local DB
-   has drifted). It drops and recreates `ai_med`, then runs
-   `dotnet ef database update`.
-
-```powershell
-./database/createDB.ps1
-```
-
-> **Why drop first?** Some migrations are data-only seeds
-> (`SeedAgentInstructions`, `SeedImagingChunker`) that `INSERT` fixed rows. Re-running
-> `dotnet ef database update` against a database that already holds those rows fails
-> on a duplicate-key violation. Dropping first guarantees a clean apply. For a
-> production database with real data you would **not** drop — you would only apply
-> the pending migrations (`dotnet ef database update`).
+2. **Manually, via `createDB.ps1`.** The drop-and-recreate flow described in
+   step 2 above.
 
 ## Adding a new migration
 
@@ -101,6 +119,8 @@ Guidelines:
 | 9 | `ChunkPatientDoctorAndVectorIndexes` | `chunks` B-tree on `(patient_id, doctor_id)` + HNSW ANN index |
 | 10 | `IngestionDocumentSummary` | `summary` column on `ingestions` (per-document summary) |
 | 11 | `PatientRollingSummary` | `patient_summaries` table + seed the `PatientSummarizer` agent |
+| 12 | `SeedLabReportSummarizer` | seed the `LabReportSummarizer` agent prompt (lab reports are rendered by code, so this agent writes their per-document summary) |
+| 13 | `IngestionQualityReport` | `ingestion_quality_reports` table — persisted per-ingestion chunking quality metrics (T35) |
 
 ### The `chunks` vector index
 
@@ -126,15 +146,61 @@ index expression), so it is not in the EF model snapshot — do not re-scaffold 
 
 ## Verifying a fresh database
 
-```bash
-# tables (expect: agent_instructions, analyte_results, chunks, erasure_log, ingestions)
-docker exec -e PGPASSWORD=postgres ai-med-postgres psql -U postgres -d ai_med -c "\dt"
+```powershell
+# tables (expect: agent_instructions, analyte_results, chunks, erasure_log,
+#                 ingestion_quality_reports, ingestions, patient_summaries)
+docker exec -e PGPASSWORD=postgres ai-med-postgres psql -U postgres -d ai_med -c '\dt'
 
-# every migration recorded (expect 8)
-docker exec -e PGPASSWORD=postgres ai-med-postgres psql -U postgres -d ai_med \
+# every migration recorded (expect 13)
+docker exec -e PGPASSWORD=postgres ai-med-postgres psql -U postgres -d ai_med `
   -c 'SELECT count(*) FROM "__EFMigrationsHistory";'
 
 # pgvector present
-docker exec -e PGPASSWORD=postgres ai-med-postgres psql -U postgres -d ai_med \
+docker exec -e PGPASSWORD=postgres ai-med-postgres psql -U postgres -d ai_med `
   -c "SELECT extname, extversion FROM pg_extension WHERE extname='vector';"
 ```
+
+## (Optional) A web UI for the vector store
+
+pgvector is stored in Postgres, so any Postgres admin UI works. Start **pgAdmin**
+in its own container:
+
+```powershell
+docker run -d --name ai-med-pgadmin `
+  -e PGADMIN_DEFAULT_EMAIL=admin@admin.com `
+  -e PGADMIN_DEFAULT_PASSWORD=admin `
+  -p 5050:80 dpage/pgadmin4
+```
+
+Then open <http://localhost:5050> (login `admin@admin.com` / `admin`) and register
+a server pointing at the database:
+
+| Field | Value |
+|---|---|
+| Host | `host.docker.internal` |
+| Port | `5433` |
+| Maintenance DB | `ai_med` |
+| Username | `postgres` |
+| Password | `postgres` |
+
+> pgAdmin runs in its own container, so it reaches the Postgres container via
+> `host.docker.internal` (not `localhost`).
+
+**Lighter alternative — Adminer** (single-page, no login setup):
+
+```powershell
+docker run -d --name ai-med-adminer -p 8080:8080 adminer
+```
+
+Open <http://localhost:8080>, then connect with System `PostgreSQL`, Server
+`host.docker.internal:5433`, User `postgres`, Password `postgres`, Database `ai_med`.
+
+To stop the UI when done:
+
+```powershell
+docker stop ai-med-pgadmin    # or: ai-med-adminer
+```
+
+Connection string
+-----------------
+postgresql://postgres:postgres@host.docker.internal:5433/ai_med
