@@ -40,6 +40,9 @@ public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> opti
     /// <summary>One rolling overview per patient, regenerated after each ingestion.</summary>
     public DbSet<PatientSummary> PatientSummaries => Set<PatientSummary>();
 
+    /// <summary>The chunking quality of each completed ingestion (T35) — the golden-set baseline's measured numbers.</summary>
+    public DbSet<IngestionQualityReport> IngestionQualityReports => Set<IngestionQualityReport>();
+
     /// <inheritdoc />
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -165,6 +168,27 @@ public sealed class IngestionDbContext(DbContextOptions<IngestionDbContext> opti
             entity.Property(p => p.ChatModel).HasColumnName("chat_model");
             entity.Property(p => p.InstructionVersion).HasColumnName("instruction_version");
             entity.Property(p => p.UpdatedAt).HasColumnName("updated_at");
+        });
+
+        modelBuilder.Entity<IngestionQualityReport>(entity =>
+        {
+            entity.ToTable("ingestion_quality_reports");
+            entity.HasKey(q => q.IngestionId);
+            entity.Property(q => q.IngestionId).HasColumnName("ingestion_id");
+            entity.Property(q => q.ChunkCount).HasColumnName("chunk_count");
+            entity.Property(q => q.TokenCounts).HasColumnName("token_counts");
+            entity.Property(q => q.TotalTokens).HasColumnName("total_tokens");
+            entity.Property(q => q.MinTokens).HasColumnName("min_tokens");
+            entity.Property(q => q.MaxTokens).HasColumnName("max_tokens");
+            entity.Property(q => q.GuardrailMerges).HasColumnName("guardrail_merges");
+            entity.Property(q => q.GuardrailSplits).HasColumnName("guardrail_splits");
+            entity.Property(q => q.CorrectiveRetryFired).HasColumnName("corrective_retry_fired");
+            entity.Property(q => q.CreatedAt).HasColumnName("created_at");
+
+            // The report is keyed by, and points at, the ingestion it describes,
+            // so it is deleted with the ingestion (erasure and rerun both remove
+            // the row) rather than left orphaned.
+            entity.HasOne<IngestionRecord>().WithMany().HasForeignKey(q => q.IngestionId);
         });
 
         modelBuilder.Entity<AnalyteResult>(entity =>

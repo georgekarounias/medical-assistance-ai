@@ -179,6 +179,29 @@ public sealed class IngestionsController(
     public async Task<IActionResult> GetStatus(Guid id, CancellationToken ct) =>
         await store.GetStatusAsync(id, ct) is { } status ? Ok(status) : NotFound();
 
+    /// <summary>Returns the chunking quality report of one completed Ingestion.</summary>
+    /// <remarks>
+    /// The measured record of how one document chunked (T35): the number of chunks,
+    /// the per-chunk token distribution, how many sub-floor fragments the guardrails
+    /// merged and over-ceiling chunks they split, and whether the chunking agent's
+    /// corrective retry fired. It is the baseline a golden set (T36) compares
+    /// against — a rise in the guardrail counts or the retry rate is a chunking
+    /// regression made visible rather than suspected.
+    ///
+    /// Present only once an ingestion has Completed: it is written in the same
+    /// transaction as the chunks, so an ingestion that is still running, failed, or
+    /// unknown has no report and this returns 404.
+    /// </remarks>
+    /// <param name="id">The ingestion id returned by the submit call.</param>
+    /// <param name="ct">Cancellation token for the request.</param>
+    /// <response code="200">The report; the ingestion has completed.</response>
+    /// <response code="404">No report exists — the ingestion is unknown, still running, or failed before it committed.</response>
+    [HttpGet("{id:guid}/quality")]
+    [ProducesResponseType<IngestionQualityReportView>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetQualityReport(Guid id, CancellationToken ct) =>
+        await store.GetQualityReportAsync(id, ct) is { } report ? Ok(report) : NotFound();
+
     /// <summary>Reruns a Failed Ingestion from the payload stored when it was submitted.</summary>
     /// <remarks>
     /// The document is never uploaded again: recovery is this one call. The

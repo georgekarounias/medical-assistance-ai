@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using Microsoft.Extensions.AI;
 using Npgsql;
@@ -45,6 +46,10 @@ public sealed class PatientSummaryService(
             var (instructions, version) = instructionProvider.Get(AgentNames.PatientSummarizer);
             var chatModel = (chatClient.GetService(typeof(ChatClientMetadata)) as ChatClientMetadata)?.DefaultModelId;
             var agent = chatClient.AsAIAgent(name: AgentNames.PatientSummarizer, instructions: instructions);
+
+            using var activity = IngestionTelemetry.StartActivity("agent.patient-summary");
+            activity?.SetTag("agent.name", AgentNames.PatientSummarizer);
+            activity?.SetTag("summary.document_count", documents.Count);
 
             var response = await agent.RunAsync(BuildPrompt(documents), cancellationToken: ct);
             var overview = response.Text.Trim();

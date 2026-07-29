@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Threading.Channels;
 using MedicalAssistance.Ingestion.Api.Realtime;
 using Npgsql;
@@ -45,6 +46,19 @@ public sealed class IngestionWorker(
 
         await foreach (var ingestionId in queue.Reader.ReadAllAsync(ct))
         {
+            // Every log line for this run carries the ingestion id (T35). The scope
+            // flows through the shared async-local scope provider, so the pipeline,
+            // committer and summariser loggers inherit it without being handed it —
+            // an operator can filter one document's whole run by this id alone.
+            using var logScope = logger.BeginScope(
+                new Dictionary<string, object> { ["IngestionId"] = ingestionId });
+
+            // Wall-clock from pickup to terminal state, recorded as the ingestion
+            // duration metric whichever way the run ends. Document type is unknown
+            // until the payload is loaded, so a failure before that is tagged unknown.
+            var stopwatch = Stopwatch.StartNew();
+            var documentType = "unknown";
+
             try
             {
                 // Ownership first, and held on its own connection for the whole
@@ -84,6 +98,8 @@ public sealed class IngestionWorker(
                             ingestionId,
                             $"Gave up after {maxAttempts} attempts without completing. " +
                             "Resubmit the document to try again with a fresh set of attempts.");
+                        IngestionTelemetry.RecordOutcome(
+                            IngestionTelemetry.OutcomeFailed, documentType, stopwatch.Elapsed);
                         continue;
 
                     case ClaimOutcome.NotClaimable:
@@ -92,22 +108,40 @@ public sealed class IngestionWorker(
                         // purpose, so a queue entry outliving its work is
                         // ordinary — and running it again would re-embed a
                         // stored document and supersede any correction made to
-                        // it since.
+                        // it since. Not this worker's outcome to count.
                         logger.LogDebug(
                             "Ingestion {IngestionId} has already finished; nothing left to run", ingestionId);
                         continue;
                 }
 
                 var request = await store.LoadRequestAsync(ingestionId, ct);
+                documentType = request.DocumentType;
 
-                // Deterministic routing (ADR-0004): the document's declared type
-                // selects its strategy. The type was validated at the door against
-                // the same registry, so this always resolves for a submitted
-                // document — an unknown type here would be a bug, and says so.
-                var strategy = scope.ServiceProvider
-                    .GetRequiredService<IngestionStrategyRegistry>()
-                    .For(request.DocumentType);
-                await strategy.IngestAsync(ingestionId, request, ct);
+                // The document type and patient join the log scope now they are
+                // known, enriching every line the strategy and committer write.
+                using var runScope = logger.BeginScope(new Dictionary<string, object>
+                {
+                    ["DocumentType"] = documentType,
+                    ["PatientId"] = request.PatientId,
+                });
+
+                // The root span of the ingestion — its children are the agent,
+                // embedding and extraction spans the strategy opens. Ids and type
+                // only, never patient content (ADR-0002/0006).
+                using (var activity = IngestionTelemetry.StartActivity("ingest.document"))
+                {
+                    activity?.SetTag("ingestion.id", ingestionId);
+                    activity?.SetTag("document.type", documentType);
+
+                    // Deterministic routing (ADR-0004): the document's declared type
+                    // selects its strategy. The type was validated at the door against
+                    // the same registry, so this always resolves for a submitted
+                    // document — an unknown type here would be a bug, and says so.
+                    var strategy = scope.ServiceProvider
+                        .GetRequiredService<IngestionStrategyRegistry>()
+                        .For(documentType);
+                    await strategy.IngestAsync(ingestionId, request, ct);
+                }
 
                 // The document is committed and searchable; now refresh the patient's
                 // rolling overview from the full current set. Best-effort by contract —
@@ -116,6 +150,9 @@ public sealed class IngestionWorker(
                 await scope.ServiceProvider
                     .GetRequiredService<PatientSummaryService>()
                     .RegenerateAsync(request.PatientId, ct);
+
+                IngestionTelemetry.RecordOutcome(
+                    IngestionTelemetry.OutcomeCompleted, documentType, stopwatch.Elapsed);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -124,6 +161,8 @@ public sealed class IngestionWorker(
             catch (Exception exception)
             {
                 logger.LogError(exception, "Ingestion {IngestionId} failed", ingestionId);
+                IngestionTelemetry.RecordOutcome(
+                    IngestionTelemetry.OutcomeFailed, documentType, stopwatch.Elapsed);
                 await FailAsync(ingestionId, exception.Message);
             }
         }

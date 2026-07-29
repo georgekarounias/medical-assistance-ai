@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Extensions.AI;
 
 namespace MedicalAssistance.Ingestion.Api.Ingestions;
@@ -38,7 +39,16 @@ public sealed class LabReportStrategy(
         // Validation has already confirmed the payload is a present, size-capped,
         // valid-base64 PDF, so this decode cannot throw on a submitted document.
         var pdf = Convert.FromBase64String(request.PdfContent!);
-        var extracted = await extractor.ExtractAsync(pdf, ct);
+
+        // A span around extraction — byte size and table count, never the extracted
+        // text, which is the report's verbatim content (ADR-0005/0006).
+        ExtractedDocument extracted;
+        using (var activity = IngestionTelemetry.StartActivity("extract"))
+        {
+            activity?.SetTag("extract.pdf_bytes", pdf.Length);
+            extracted = await extractor.ExtractAsync(pdf, ct);
+            activity?.SetTag("extract.table_count", extracted.Tables.Count);
+        }
 
         // Tier 1: deterministic panels. Must produce something, or fail honestly.
         var panels = LabReportRenderer.Render(extracted);
@@ -72,6 +82,9 @@ public sealed class LabReportStrategy(
             var (instructions, _) = instructionProvider.Get(AgentNames.LabReportSummarizer);
             var summarizer = chatClient.AsAIAgent(name: AgentNames.LabReportSummarizer, instructions: instructions);
 
+            using var activity = IngestionTelemetry.StartActivity("agent.lab-summary");
+            activity?.SetTag("agent.name", AgentNames.LabReportSummarizer);
+
             var report = string.Join("\n\n", panels.Select(panel => panel.VerbatimText));
             var response = await summarizer.RunAsync($"Summarise this laboratory report:\n\n{report}", cancellationToken: ct);
 
@@ -99,6 +112,10 @@ public sealed class LabReportStrategy(
 
         try
         {
+            using var activity = IngestionTelemetry.StartActivity("agent.analyte-map");
+            activity?.SetTag("agent.name", AgentNames.LabAnalyteMapper);
+            activity?.SetTag("extract.table_count", extracted.Tables.Count);
+
             var response = await mapper.RunAsync(LabAnalyteMapping.BuildPrompt(extracted), cancellationToken: ct);
 
             // Verification is code's job, not the model's — a bad answer yields null

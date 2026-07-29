@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using MedicalAssistance.Ingestion.Api.Realtime;
@@ -75,13 +76,19 @@ public sealed class ProseIngestionPipeline
 
         await _statusPublisher.PublishAsync(
             ingestionId, IngestionIdentity.Of(request), IngestionStages.Chunking, ct: ct);
-        var plan = await RequestChunkPlanAsync(chunkingAgent, lines, promptHeader, ct);
-        var sizedChunks = _sizeGuardrails.Apply(lines, plan.Chunks);
-        var chunks = AssembleChunks(lines, sizedChunks, plan.Summary, bodyChunkKind, imageLink);
+        var (plan, correctiveRetryFired) = await RequestChunkPlanAsync(
+            chunkingAgent, agentInstructionName, lines, promptHeader, ct);
+        var guardrails = _sizeGuardrails.Apply(lines, plan.Chunks);
+        var chunks = AssembleChunks(lines, guardrails.Chunks, plan.Summary, bodyChunkKind, imageLink);
+
+        // The diagnostics travel with the chunks into the atomic commit, so the
+        // quality report the doctor's regression baseline reads (T35) lands in the
+        // same transaction as the chunks it describes.
+        var diagnostics = new ChunkingDiagnostics(guardrails.Merges, guardrails.Splits, correctiveRetryFired);
 
         await _committer.CommitAsync(
             ingestionId, request, chunks, instructionVersion, _chatModel,
-            analytes: null, analytesExtracted: null, documentSummary: plan.Summary, ct);
+            analytes: null, analytesExtracted: null, documentSummary: plan.Summary, ct, diagnostics);
     }
 
     private static IReadOnlyList<string> SplitIntoLines(string body) =>
@@ -91,26 +98,34 @@ public sealed class ProseIngestionPipeline
             .Where(line => !string.IsNullOrWhiteSpace(line))
             .ToList();
 
-    private async Task<ChunkPlan> RequestChunkPlanAsync(
-        AIAgent chunkingAgent, IReadOnlyList<string> lines, string promptHeader, CancellationToken ct)
+    private async Task<(ChunkPlan Plan, bool CorrectiveRetryFired)> RequestChunkPlanAsync(
+        AIAgent chunkingAgent, string agentName, IReadOnlyList<string> lines, string promptHeader, CancellationToken ct)
     {
         // Never trust the agent's output blindly: validate, allow ONE corrective
         // retry naming the violation, then fail honestly — no fallback chunking.
         var prompt = BuildChunkingPrompt(lines, promptHeader);
-        var (plan, violation) = await TryGetValidPlanAsync(chunkingAgent, prompt, lines.Count, ct);
+        var (plan, violation) = await TryGetValidPlanAsync(chunkingAgent, agentName, prompt, lines.Count, ct);
         if (plan is not null)
-            return plan;
+            return (plan, false);
 
+        // The first plan was rejected — the retry the quality report flags. A rise
+        // in how often this fires across a golden set is the chunker degrading (T35).
         var retryPrompt = prompt +
             $"\n\nYour previous chunk plan was invalid: {violation} " +
             "Return a corrected plan following the same JSON contract.";
-        (plan, violation) = await TryGetValidPlanAsync(chunkingAgent, retryPrompt, lines.Count, ct);
-        return plan ?? throw new InvalidChunkPlanException(violation!);
+        (plan, violation) = await TryGetValidPlanAsync(chunkingAgent, agentName, retryPrompt, lines.Count, ct);
+        return (plan ?? throw new InvalidChunkPlanException(violation!), true);
     }
 
     private async Task<(ChunkPlan? Plan, string? Violation)> TryGetValidPlanAsync(
-        AIAgent chunkingAgent, string prompt, int lineCount, CancellationToken ct)
+        AIAgent chunkingAgent, string agentName, string prompt, int lineCount, CancellationToken ct)
     {
+        // A span per agent call — counts and ids only, never the prompt text, which
+        // carries the patient's transcript (ADR-0002).
+        using var activity = IngestionTelemetry.StartActivity("agent.chunk-plan");
+        activity?.SetTag("agent.name", agentName);
+        activity?.SetTag("chunking.line_count", lineCount);
+
         var response = await chunkingAgent.RunAsync(prompt, cancellationToken: ct);
         ChunkPlan? plan;
         try

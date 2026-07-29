@@ -23,6 +23,30 @@ public sealed record ChunkToStore(
     Vector Embedding);
 
 /// <summary>
+/// The chunking quality of one document, handed to the store to commit alongside
+/// its chunks (T35). Built by <see cref="DocumentChunkCommitter"/> from the chunk
+/// set actually stored, so the report can never describe a chunk shape that was
+/// not the one committed.
+/// </summary>
+/// <param name="ChunkCount">How many chunks were stored, the summary chunk included.</param>
+/// <param name="TokenCounts">Estimated tokens of every stored chunk, in chunk order.</param>
+/// <param name="TotalTokens">Total estimated tokens across all stored chunks.</param>
+/// <param name="MinTokens">Smallest chunk's estimated tokens.</param>
+/// <param name="MaxTokens">Largest chunk's estimated tokens.</param>
+/// <param name="GuardrailMerges">Sub-floor fragments the guardrails merged (0 for a deterministic strategy).</param>
+/// <param name="GuardrailSplits">Extra chunks the guardrails produced by splitting (0 for a deterministic strategy).</param>
+/// <param name="CorrectiveRetryFired">Whether the chunking agent's corrective retry fired.</param>
+public sealed record QualityReportToStore(
+    int ChunkCount,
+    int[] TokenCounts,
+    int TotalTokens,
+    int MinTokens,
+    int MaxTokens,
+    int GuardrailMerges,
+    int GuardrailSplits,
+    bool CorrectiveRetryFired);
+
+/// <summary>
 /// One live document as it feeds a patient's rolling summary: its type, its clinical
 /// date, and the per-document summary produced at ingestion (null for a type that
 /// produces none, e.g. a LabReport).
@@ -460,6 +484,34 @@ public sealed class IngestionStore(IngestionDbContext db)
         await db.SaveChangesAsync(ct);
     }
 
+    /// <summary>
+    /// The chunking quality report of one Ingestion, or null when none exists yet —
+    /// the ingestion is unknown, still running, or failed before it committed (T35).
+    /// </summary>
+    public Task<IngestionQualityReportView?> GetQualityReportAsync(Guid id, CancellationToken ct = default) =>
+        db.IngestionQualityReports.AsNoTracking()
+            .Where(q => q.IngestionId == id)
+            .Select(q => new IngestionQualityReportView
+            {
+                IngestionId = q.IngestionId,
+                ChunkCount = q.ChunkCount,
+                TokenCounts = q.TokenCounts,
+                TotalTokens = q.TotalTokens,
+                MinTokens = q.MinTokens,
+                MaxTokens = q.MaxTokens,
+                // Integer division is deliberate: a token estimate is already a
+                // whole-number heuristic, so a fractional mean would imply a
+                // precision the count does not have. Guarded against the zero-chunk
+                // case, which a committed report never is but a reader should not
+                // divide by.
+                MeanTokens = q.ChunkCount == 0 ? 0 : q.TotalTokens / q.ChunkCount,
+                GuardrailMerges = q.GuardrailMerges,
+                GuardrailSplits = q.GuardrailSplits,
+                CorrectiveRetryFired = q.CorrectiveRetryFired,
+                CreatedAt = q.CreatedAt,
+            })
+            .FirstOrDefaultAsync(ct);
+
     /// <summary>Reloads the original submitted payload of an Ingestion — the input for processing and rerun-from-scratch.</summary>
     public async Task<IngestionRequest> LoadRequestAsync(Guid id, CancellationToken ct = default)
     {
@@ -658,6 +710,7 @@ public sealed class IngestionStore(IngestionDbContext db)
         Guid ingestionId, string documentId, IngestionRequest request, IReadOnlyList<ChunkToStore> chunks,
         int? instructionVersion, string? chatModel, string? embeddingModel,
         IReadOnlyList<VerifiedAnalyte>? analytes, bool? analytesExtracted, string? documentSummary,
+        QualityReportToStore qualityReport,
         CancellationToken ct = default) =>
         InTransactionAsync(async innerCt =>
         {
@@ -704,6 +757,25 @@ public sealed class IngestionStore(IngestionDbContext db)
                     TableIndex = analyte.TableIndex,
                     RowIndex = analyte.RowIndex,
                 }));
+
+            // The quality report commits in the same transaction as the chunks and
+            // the Completed flip (T35), so a completed ingestion always has a report
+            // and a report never describes an ingestion that did not finish. Only a
+            // Failed ingestion is ever rerun, and a failed run never reached here, so
+            // one ingestion id inserts exactly one report — insert, not upsert.
+            db.IngestionQualityReports.Add(new IngestionQualityReport
+            {
+                IngestionId = ingestionId,
+                ChunkCount = qualityReport.ChunkCount,
+                TokenCounts = qualityReport.TokenCounts,
+                TotalTokens = qualityReport.TotalTokens,
+                MinTokens = qualityReport.MinTokens,
+                MaxTokens = qualityReport.MaxTokens,
+                GuardrailMerges = qualityReport.GuardrailMerges,
+                GuardrailSplits = qualityReport.GuardrailSplits,
+                CorrectiveRetryFired = qualityReport.CorrectiveRetryFired,
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
 
             ingestion.Status = "Completed";
             ingestion.InstructionVersion = instructionVersion;

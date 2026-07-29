@@ -251,6 +251,65 @@ public class Chunk
 }
 
 /// <summary>
+/// The chunking quality of one completed Ingestion, written in the same
+/// transaction as its chunks (T35). It is what turns a golden-set baseline into
+/// measured numbers rather than a suspicion: chunk count and the per-chunk token
+/// distribution describe the shape the chunker produced, while the two guardrail
+/// repair counts and the corrective-retry flag say how far the agent's own plan
+/// fell outside the configured band before code fixed it. A rise in any of them
+/// across a fixed corpus (T36) is a chunking regression made visible.
+///
+/// One row per Ingestion (ingestion_id is the key and a foreign key), so it is
+/// removed with the ingestion it describes — a superseded or erased document
+/// leaves no orphan report behind.
+/// </summary>
+public class IngestionQualityReport
+{
+    /// <summary>The Ingestion this report is of — primary key and foreign key.</summary>
+    public Guid IngestionId { get; set; }
+
+    /// <summary>How many chunks were stored, the summary chunk included.</summary>
+    public int ChunkCount { get; set; }
+
+    /// <summary>
+    /// Estimated tokens of every stored chunk, in chunk order — the full
+    /// distribution, so a baseline can compute whatever statistic it needs rather
+    /// than only the ones summarised below. Estimated with <see cref="ChunkTokens"/>,
+    /// the same cheap heuristic the size guardrails judge boundaries by.
+    /// </summary>
+    public int[] TokenCounts { get; set; } = [];
+
+    /// <summary>Total estimated tokens across all stored chunks.</summary>
+    public int TotalTokens { get; set; }
+
+    /// <summary>Smallest chunk's estimated tokens — the floor breaches show up here.</summary>
+    public int MinTokens { get; set; }
+
+    /// <summary>Largest chunk's estimated tokens — an unsplittable over-ceiling line shows up here.</summary>
+    public int MaxTokens { get; set; }
+
+    /// <summary>
+    /// Sub-floor fragments the guardrails merged into a neighbor. Zero for a
+    /// deterministic strategy that runs no chunking agent (a LabReport renders
+    /// panels, so nothing to merge).
+    /// </summary>
+    public int GuardrailMerges { get; set; }
+
+    /// <summary>Over-ceiling chunks the guardrails cut at a line boundary — the extra chunks produced. Zero for deterministic strategies.</summary>
+    public int GuardrailSplits { get; set; }
+
+    /// <summary>
+    /// Whether the chunking agent's first plan was rejected and the one corrective
+    /// retry fired. False for a strategy with no chunking agent, and the honest
+    /// signal that the chunker is drifting when it starts firing across a golden set.
+    /// </summary>
+    public bool CorrectiveRetryFired { get; set; }
+
+    /// <summary>When the report was written — the ingestion's completion, in UTC.</summary>
+    public DateTimeOffset CreatedAt { get; set; }
+}
+
+/// <summary>
 /// One patient's rolling summary: a single evolving overview of everything the
 /// service holds about the patient, regenerated from their per-document summaries
 /// after each ingestion completes. One row per patient (patient_id is the key), so

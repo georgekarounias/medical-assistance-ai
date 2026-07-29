@@ -9,6 +9,10 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.OpenApi;
 using Npgsql;
+using OpenTelemetry.Logs;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 using Pgvector.EntityFrameworkCore;
 using Pgvector.Npgsql;
 
@@ -64,6 +68,51 @@ if (builder.Configuration.GetValue<int?>(AzureAi.EmbeddingDimensionsConfiguratio
 var dataSourceBuilder = new NpgsqlDataSourceBuilder(connectionString);
 dataSourceBuilder.UseVector();
 var dataSource = dataSourceBuilder.Build();
+
+// Observability (T35): traces, metrics and logs through OpenTelemetry. The
+// service instruments itself and the frameworks it sits on; where the signals go
+// is left to the OTLP exporter, added only when an endpoint is configured (the
+// standard OTEL_EXPORTER_OTLP_ENDPOINT). That gating keeps local runs and the
+// test host from opening exporter connections to a collector that is not there,
+// while a deployment turns telemetry on with one environment variable.
+//
+// The spans and metrics this service emits carry ids and counts only — never a
+// word of the patient's transcript or a rendered lab panel (ADR-0002/0006).
+var otlpConfigured = !string.IsNullOrWhiteSpace(
+    builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"]);
+
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(resource => resource.AddService("MedicalAssistance.Ingestion.Api"))
+    .WithTracing(tracing =>
+    {
+        tracing
+            .AddSource(IngestionTelemetry.Name)
+            .AddAspNetCoreInstrumentation()
+            .AddHttpClientInstrumentation()
+            // Database spans come from the Npgsql driver EF Core sits on, so one
+            // instrumentation covers every query the store issues.
+            .AddNpgsql();
+        if (otlpConfigured)
+            tracing.AddOtlpExporter();
+    })
+    .WithMetrics(metrics =>
+    {
+        metrics
+            .AddMeter(IngestionTelemetry.Name)
+            .AddAspNetCoreInstrumentation()
+            .AddHttpClientInstrumentation();
+        if (otlpConfigured)
+            metrics.AddOtlpExporter();
+    });
+
+// Logs carry the ingestion-run scope (IncludeScopes) so the ingestion id the
+// worker opens is attached to every line, exported alongside the traces.
+builder.Logging.AddOpenTelemetry(logging =>
+{
+    logging.IncludeScopes = true;
+    if (otlpConfigured)
+        logging.AddOtlpExporter();
+});
 
 builder.Services.AddControllers(options =>
 {

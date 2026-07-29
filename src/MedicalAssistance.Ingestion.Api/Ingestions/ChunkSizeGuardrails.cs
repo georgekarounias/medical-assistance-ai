@@ -8,6 +8,18 @@ namespace MedicalAssistance.Ingestion.Api.Ingestions;
 internal sealed record PlannedChunk(int StartLine, int EndLine, string ContextBlurb);
 
 /// <summary>
+/// What the guardrails did to a plan: the resized chunks, plus how many repairs
+/// each pass made. The counts are the quality report's <c>guardrailMerges</c> and
+/// <c>guardrailSplits</c> (T35) — a rise in either across a golden set is a
+/// chunking regression made visible, since every repair is a boundary the agent
+/// proposed outside the configured band.
+/// </summary>
+/// <param name="Chunks">The plan's chunks resized to fit the band.</param>
+/// <param name="Merges">Sub-floor fragments absorbed into a neighbor — one per merge operation.</param>
+/// <param name="Splits">Extra chunks produced by cutting oversized chunks (parts − 1, summed).</param>
+internal sealed record GuardrailOutcome(IReadOnlyList<PlannedChunk> Chunks, int Merges, int Splits);
+
+/// <summary>
 /// Chunk-size guardrails, applied after the plan is validated and before any
 /// text is assembled. Embedding quality collapses at both extremes — a
 /// three-word fragment carries no retrievable meaning, and an overlong chunk
@@ -21,13 +33,23 @@ internal sealed record PlannedChunk(int StartLine, int EndLine, string ContextBl
 /// </summary>
 internal sealed class ChunkSizeGuardrails(int minTokens, int maxTokens)
 {
-    /// <summary>Returns the plan's chunks resized to fit the configured band.</summary>
-    public IReadOnlyList<PlannedChunk> Apply(IReadOnlyList<string> lines, IReadOnlyList<PlannedChunk> planned) =>
-        SplitOversized(lines, MergeUndersized(lines, planned));
+    /// <summary>
+    /// Returns the plan's chunks resized to fit the configured band, alongside a
+    /// count of the merges and splits it took — the two repair counts the quality
+    /// report records (T35).
+    /// </summary>
+    public GuardrailOutcome Apply(IReadOnlyList<string> lines, IReadOnlyList<PlannedChunk> planned)
+    {
+        var merged = MergeUndersized(lines, planned, out var merges);
+        var resized = SplitOversized(lines, merged, out var splits);
+        return new GuardrailOutcome(resized, merges, splits);
+    }
 
-    private List<PlannedChunk> MergeUndersized(IReadOnlyList<string> lines, IReadOnlyList<PlannedChunk> planned)
+    private List<PlannedChunk> MergeUndersized(
+        IReadOnlyList<string> lines, IReadOnlyList<PlannedChunk> planned, out int merges)
     {
         var chunks = planned.ToList();
+        merges = 0;
         // Each merge removes one chunk, so this terminates; a whole document
         // below the floor ends as one undersized chunk, which is honest — there
         // is nothing left to merge it with.
@@ -41,6 +63,7 @@ internal sealed class ChunkSizeGuardrails(int minTokens, int maxTokens)
                 chunks[second].EndLine,
                 CombineBlurbs(chunks[first].ContextBlurb, chunks[second].ContextBlurb));
             chunks.RemoveAt(second);
+            merges++;
         }
         return chunks;
     }
@@ -68,9 +91,10 @@ internal sealed class ChunkSizeGuardrails(int minTokens, int maxTokens)
         : string.IsNullOrWhiteSpace(first) ? second
         : $"{first.TrimEnd()} {second.TrimStart()}";
 
-    private List<PlannedChunk> SplitOversized(IReadOnlyList<string> lines, List<PlannedChunk> chunks)
+    private List<PlannedChunk> SplitOversized(IReadOnlyList<string> lines, List<PlannedChunk> chunks, out int splits)
     {
         var resized = new List<PlannedChunk>();
+        splits = 0;
         foreach (var chunk in chunks)
         {
             if (Tokens(lines, chunk.StartLine, chunk.EndLine) <= maxTokens)
@@ -81,12 +105,18 @@ internal sealed class ChunkSizeGuardrails(int minTokens, int maxTokens)
 
             // The blurb describes the topic of the whole range, so each part
             // inherits it; the stored line range is what tells the parts apart.
+            var partsBefore = resized.Count;
             for (var start = chunk.StartLine; start <= chunk.EndLine;)
             {
                 var end = LastLineOfNextPart(lines, start, chunk.EndLine);
                 resized.Add(chunk with { StartLine = start, EndLine = end });
                 start = end + 1;
             }
+
+            // Every part beyond the first is a split this chunk cost. A single
+            // over-ceiling line that cannot be cut yields exactly one part, so it
+            // adds nothing here — kept whole is not a split.
+            splits += resized.Count - partsBefore - 1;
         }
         return resized;
     }

@@ -169,6 +169,50 @@ public sealed record IngestionSummary
     public required DateTimeOffset UpdatedAt { get; init; }
 }
 
+/// <summary>
+/// The chunking quality report of one completed Ingestion (T35): the shape the
+/// chunker produced and how far its own plan fell outside the configured band
+/// before code repaired it. Read at <c>GET /ingestions/{id}/quality</c>, it is
+/// what turns a golden-set baseline into measured numbers — a rise in the
+/// guardrail counts or the retry rate across a fixed corpus is a chunking
+/// regression seen rather than suspected.
+/// </summary>
+public sealed record IngestionQualityReportView
+{
+    /// <summary>The Ingestion this report is of.</summary>
+    public required Guid IngestionId { get; init; }
+
+    /// <summary>How many chunks were stored, the summary chunk included.</summary>
+    public required int ChunkCount { get; init; }
+
+    /// <summary>Estimated tokens of every stored chunk, in chunk order — the full distribution.</summary>
+    public required IReadOnlyList<int> TokenCounts { get; init; }
+
+    /// <summary>Total estimated tokens across all stored chunks.</summary>
+    public required int TotalTokens { get; init; }
+
+    /// <summary>Smallest chunk's estimated tokens.</summary>
+    public required int MinTokens { get; init; }
+
+    /// <summary>Largest chunk's estimated tokens.</summary>
+    public required int MaxTokens { get; init; }
+
+    /// <summary>Mean estimated tokens per chunk (whole-number, matching the estimate's precision).</summary>
+    public required int MeanTokens { get; init; }
+
+    /// <summary>Sub-floor fragments the guardrails merged; <c>0</c> for a deterministic strategy (a LabReport).</summary>
+    public required int GuardrailMerges { get; init; }
+
+    /// <summary>Extra chunks the guardrails produced by splitting over-ceiling chunks; <c>0</c> for a deterministic strategy.</summary>
+    public required int GuardrailSplits { get; init; }
+
+    /// <summary>Whether the chunking agent's first plan was rejected and the corrective retry fired.</summary>
+    public required bool CorrectiveRetryFired { get; init; }
+
+    /// <summary>When the report was written — the ingestion's completion, in UTC.</summary>
+    public required DateTimeOffset CreatedAt { get; init; }
+}
+
 /// <summary>Acknowledgement that a Document was accepted for ingestion.</summary>
 public sealed record IngestionAccepted
 {
