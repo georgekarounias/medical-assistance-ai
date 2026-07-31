@@ -1,6 +1,7 @@
 using System.Threading.Channels;
 using MedicalAssistance.Ingestion.Api.Ingestions;
 using MedicalAssistance.Ingestion.Api.Realtime;
+using MedicalAssistance.Ingestion.Api.Retrieval;
 using MedicalAssistance.Ingestion.Api.Security;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
@@ -203,6 +204,16 @@ builder.Services.AddScoped<IIngestionStrategy, DoctorNoteStrategy>();
 builder.Services.AddScoped<IIngestionStrategy, LabReportStrategy>();
 builder.Services.AddScoped<IIngestionStrategy, ImagingReportStrategy>();
 builder.Services.AddScoped<IngestionStrategyRegistry>();
+
+// The retrieval pipeline (ADR-0010/0011): an ordered-step registry mirroring the
+// strategy registry above. Every stage is registered as an IRetrievalStep; the
+// service sorts them by Order and runs them in sequence, so a new stage (the
+// deferred hybrid-search or structured-analyte steps) is one more AddScoped line.
+// Internal in v1 — the answer path calls SearchAsync directly, no HTTP surface yet.
+// The Scope step (Order 10) sets the mandatory patient_id boundary first; embed and
+// search steps join in T41.
+builder.Services.AddScoped<IRetrievalStep, ScopeRetrievalStep>();
+builder.Services.AddScoped<IRetrievalService, RetrievalService>();
 
 // The extraction seam (ADR-0005): one provider-neutral interface for turning a
 // PDF into text + table cell grids. Unconfigured by default so the app boots with
