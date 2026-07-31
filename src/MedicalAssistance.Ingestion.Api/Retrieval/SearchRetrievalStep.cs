@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using MedicalAssistance.Ingestion.Api.Ingestions;
+using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
 namespace MedicalAssistance.Ingestion.Api.Retrieval;
@@ -10,6 +11,12 @@ namespace MedicalAssistance.Ingestion.Api.Retrieval;
 /// store, scoped and packaged. It reads the patient boundary and filters the Scope
 /// step set, the probe vector the Embed step produced, and returns the nearest
 /// chunks as Evidence Items — score, provenance, verbatim text (ADR-0011).
+///
+/// It runs through the same <see cref="IngestionDbContext"/> the ingestion store
+/// uses, via <c>SqlQueryRaw</c>: the <c>::halfvec(3072)</c> cast that makes the
+/// query hit the HNSW index cannot be expressed in LINQ, so the SQL is written by
+/// hand and projected onto a small row type — but the connection, configuration and
+/// materialisation stay EF's.
 ///
 /// Two invariants are load-bearing and easy to break silently:
 /// <list type="bullet">
@@ -21,7 +28,7 @@ namespace MedicalAssistance.Ingestion.Api.Retrieval;
 /// There is no hydration and no overfetch: a hit is already the authoritative row,
 /// and <c>TopK</c> is requested directly.
 /// </summary>
-public sealed class SearchRetrievalStep(NpgsqlDataSource dataSource) : IRetrievalStep
+public sealed class SearchRetrievalStep(IngestionDbContext db) : IRetrievalStep
 {
     /// <summary>Bounds on how many chunks a single retrieval may pull (design record; enforced again at the endpoint, T48).</summary>
     public const int MinTopK = 1;
@@ -40,71 +47,71 @@ public sealed class SearchRetrievalStep(NpgsqlDataSource dataSource) : IRetrieva
 
         var topK = Math.Clamp(context.Request.TopK, MinTopK, MaxTopK);
 
-        // Parameters are built in positional order: $1 patient (the boundary), $2 the
-        // probe vector (referenced in both the SELECT distance and the ORDER BY), then
-        // each present filter, then the LIMIT. Every value is a bound parameter — no
-        // scope value is ever concatenated into the SQL.
-        var parameters = new List<object> { scope.PatientId, ToVectorLiteral(queryEmbedding) };
-        var where = new StringBuilder("patient_id = $1");
+        // Named parameters, so the probe vector can be referenced twice (the SELECT
+        // distance and the ORDER BY) as one @queryVec, and every scope value is bound
+        // rather than concatenated into the SQL. patient_id is the boundary and is
+        // always present; each filter is added only when set.
+        var parameters = new List<NpgsqlParameter>
+        {
+            new("patientId", scope.PatientId),
+            new("queryVec", ToVectorLiteral(queryEmbedding)),
+            new("topK", topK),
+        };
+        var where = new StringBuilder("patient_id = @patientId");
 
-        AppendFilter(where, parameters, "doctor_id", "=", scope.DoctorId);
-        AppendFilter(where, parameters, "document_type", "=", scope.DocumentType);
-        AppendFilter(where, parameters, "session_id", "=", scope.SessionId);
-        AppendFilter(where, parameters, "language", "=", scope.Language);
-        AppendFilter(where, parameters, "document_date", ">=", scope.From);
-        AppendFilter(where, parameters, "document_date", "<=", scope.To);
+        AppendFilter(where, parameters, "doctor_id", "=", "doctorId", scope.DoctorId);
+        AppendFilter(where, parameters, "document_type", "=", "documentType", scope.DocumentType);
+        AppendFilter(where, parameters, "session_id", "=", "sessionId", scope.SessionId);
+        AppendFilter(where, parameters, "language", "=", "language", scope.Language);
+        AppendFilter(where, parameters, "document_date", ">=", "fromDate", scope.From);
+        AppendFilter(where, parameters, "document_date", "<=", "toDate", scope.To);
 
-        parameters.Add(topK);
-        var limitParam = $"${parameters.Count}";
-
+        // Columns are aliased to the row type's property names (quoted, so Postgres
+        // keeps their casing); source_ref is cast to text so the jsonb comes back as
+        // a plain string.
         var sql =
             $"""
-            SELECT id, document_id, document_type, chunk_index, session_id, document_date,
-                   language, chunk_kind, source_ref, verbatim_text,
-                   embedding::{HalfVecCast} <=> $2::{HalfVecCast} AS distance
+            SELECT id AS "ChunkId", document_id AS "DocumentId", document_type AS "DocumentType",
+                   chunk_index AS "ChunkIndex", session_id AS "SessionId", document_date AS "DocumentDate",
+                   language AS "Language", chunk_kind AS "ChunkKind", source_ref::text AS "SourceRef",
+                   verbatim_text AS "VerbatimText",
+                   embedding::{HalfVecCast} <=> @queryVec::{HalfVecCast} AS "Distance"
             FROM chunks
             WHERE {where}
-            ORDER BY embedding::{HalfVecCast} <=> $2::{HalfVecCast}
-            LIMIT {limitParam}
+            ORDER BY embedding::{HalfVecCast} <=> @queryVec::{HalfVecCast}
+            LIMIT @topK
             """;
 
-        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
-        await using var command = new NpgsqlCommand(sql, connection);
-        foreach (var value in parameters)
-            command.Parameters.Add(new NpgsqlParameter { Value = value });
+        var rows = await db.Database
+            .SqlQueryRaw<EvidenceRow>(sql, parameters.ToArray())
+            .ToListAsync(cancellationToken);
 
-        var evidence = new List<EvidenceItem>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            var distance = reader.GetDouble(10);
-            evidence.Add(new EvidenceItem
+        context.Evidence = rows
+            .Select(row => new EvidenceItem
             {
-                ChunkId = reader.GetGuid(0),
-                DocumentId = reader.GetString(1),
-                DocumentType = reader.GetString(2),
-                ChunkIndex = reader.GetInt32(3),
-                SessionId = reader.IsDBNull(4) ? null : reader.GetString(4),
-                DocumentDate = reader.IsDBNull(5) ? null : reader.GetFieldValue<DateTimeOffset>(5),
-                Language = reader.IsDBNull(6) ? null : reader.GetString(6),
-                ChunkKind = reader.GetString(7),
-                SourceRef = reader.IsDBNull(8) ? null : reader.GetString(8),
-                VerbatimText = reader.GetString(9),
+                ChunkId = row.ChunkId,
+                DocumentId = row.DocumentId,
+                DocumentType = row.DocumentType,
+                ChunkIndex = row.ChunkIndex,
+                SessionId = row.SessionId,
+                DocumentDate = row.DocumentDate,
+                Language = row.Language,
+                ChunkKind = row.ChunkKind,
+                SourceRef = row.SourceRef,
+                VerbatimText = row.VerbatimText,
                 // Cosine distance → similarity, so a bigger score is a closer hit.
-                Score = 1.0 - distance,
-            });
-        }
-
-        context.Evidence = evidence;
+                Score = 1.0 - row.Distance,
+            })
+            .ToList();
     }
 
     private static void AppendFilter(
-        StringBuilder where, List<object> parameters, string column, string op, object? value)
+        StringBuilder where, List<NpgsqlParameter> parameters, string column, string op, string paramName, object? value)
     {
         if (value is null)
             return;
-        parameters.Add(value);
-        where.Append($" AND {column} {op} ${parameters.Count}");
+        parameters.Add(new NpgsqlParameter(paramName, value));
+        where.Append($" AND {column} {op} @{paramName}");
     }
 
     // pgvector accepts a bracketed, comma-separated literal, cast to halfvec in SQL —
@@ -112,4 +119,20 @@ public sealed class SearchRetrievalStep(NpgsqlDataSource dataSource) : IRetrieva
     // round-trips each float exactly so the probe is bit-for-bit the embedded query.
     private static string ToVectorLiteral(float[] vector) =>
         "[" + string.Join(",", vector.Select(v => v.ToString("R", CultureInfo.InvariantCulture))) + "]";
+
+    // The shape one chunks row projects onto — SqlQueryRaw materialises the aliased
+    // columns onto these properties. Distance is pgvector's cosine distance; the step
+    // turns it into the similarity Score on the Evidence Item.
+    private sealed record EvidenceRow(
+        Guid ChunkId,
+        string DocumentId,
+        string DocumentType,
+        int ChunkIndex,
+        string? SessionId,
+        DateTimeOffset? DocumentDate,
+        string? Language,
+        string ChunkKind,
+        string? SourceRef,
+        string VerbatimText,
+        double Distance);
 }
