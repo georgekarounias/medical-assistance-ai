@@ -217,6 +217,7 @@ builder.Services.AddScoped<IRetrievalStep, ScopeRetrievalStep>();
 builder.Services.AddScoped<IRetrievalStep, RefineRetrievalStep>();
 builder.Services.AddScoped<IRetrievalStep, EmbedRetrievalStep>();
 builder.Services.AddScoped<IRetrievalStep, SearchRetrievalStep>();
+builder.Services.AddScoped<IRetrievalStep, PackageRetrievalStep>();
 builder.Services.AddScoped<IRetrievalService, RetrievalService>();
 
 // The grounded-chat answer path (ADR-0010/0012): the stateless orchestration behind

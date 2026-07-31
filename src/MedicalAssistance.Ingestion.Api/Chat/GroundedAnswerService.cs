@@ -54,6 +54,22 @@ public sealed class GroundedAnswerService(
 
         var result = await retrieval.SearchAsync(retrievalRequest, cancellationToken);
 
+        // Nothing cleared the confidence threshold — including a patient with no
+        // chunks at all. That is an honest insufficient-evidence refusal, not an
+        // error: a deterministic, language-localized sentence, no citations, and NO
+        // model call on this path (ADR-0012).
+        if (result.Evidence.Count == 0)
+        {
+            return new ChatAnswerResponse
+            {
+                Answer = InsufficientEvidence.Message(language),
+                Refused = true,
+                RetrievalUsed = true,
+                Language = language,
+                Citations = [],
+            };
+        }
+
         var citations = result.Evidence
             .Select((evidence, index) => new ChatCitation
             {
