@@ -89,16 +89,19 @@ public sealed class GroundedAnswerService(
             new GroundedAnswerContext(question, language, result.Evidence, request.RecentTurns, request.PriorSummary),
             cancellationToken);
 
-        // Refusal (T45) and citation verification (T46) are not wired yet: this
-        // returns the generated answer with every retrieved item as a citation. T46
-        // will reconcile citations to those the answer actually references.
+        // Verify grounding before release (ADR-0012): every [E#] the answer cites must
+        // have been supplied this turn. A fabricated reference throws — fail-fast, no
+        // retry, and the unverified answer is never returned. The surviving citations
+        // are reconciled to exactly what the answer references.
+        var verifiedCitations = CitationVerification.Verify(answer, citations);
+
         return new ChatAnswerResponse
         {
             Answer = answer,
             Refused = false,
             RetrievalUsed = true,
             Language = language,
-            Citations = citations,
+            Citations = verifiedCitations,
         };
     }
 

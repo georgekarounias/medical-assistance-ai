@@ -44,8 +44,9 @@ public class ChatAnswerEndpointTests(IngestionApiFixture fixture) : IClassFixtur
         await IngestTranscriptAsync(client, chat, emb, "chat-alice", "dr-a", "alice-s2",
             farLine, "Vitals.", "Alice two.", Middling, Orthogonal);
 
-        // The scripted answer the (seam) generator returns for this turn.
-        chat.EnqueueResponse("The patient takes insulin daily [E1].");
+        // The scripted answer cites two of the retrieved items; verification (T46)
+        // reconciles the returned citations to exactly those it references.
+        chat.EnqueueResponse("The patient takes insulin daily [E1]; blood pressure was normal [E2].");
 
         var response = await client.PostAsJsonAsync("/patients/chat-alice/chat/answer", new
         {
@@ -57,18 +58,20 @@ public class ChatAnswerEndpointTests(IngestionApiFixture fixture) : IClassFixtur
         response.EnsureSuccessStatusCode();
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
 
-        Assert.Equal("The patient takes insulin daily [E1].", body.GetProperty("answer").GetString());
+        Assert.Equal(
+            "The patient takes insulin daily [E1]; blood pressure was normal [E2].",
+            body.GetProperty("answer").GetString());
         Assert.False(body.GetProperty("refused").GetBoolean());
         Assert.True(body.GetProperty("retrievalUsed").GetBoolean());
         Assert.Equal("en", body.GetProperty("language").GetString());
 
+        // Reconciled to the two cited labels, in retrieval order; the near dialog chunk leads.
         var citations = body.GetProperty("citations").EnumerateArray().ToList();
-        Assert.Equal(4, citations.Count); // two documents × (body + summary)
-
-        // Labels run E1.. in retrieval order; the near dialog chunk leads.
+        Assert.Equal(2, citations.Count);
         Assert.Equal("E1", citations[0].GetProperty("label").GetString());
         Assert.Equal("E2", citations[1].GetProperty("label").GetString());
         Assert.Equal(nearLine, citations[0].GetProperty("quote").GetString());
+        Assert.Equal(farLine, citations[1].GetProperty("quote").GetString());
         Assert.Equal("SessionTranscript", citations[0].GetProperty("documentType").GetString());
         Assert.Equal("alice-s1", citations[0].GetProperty("sessionId").GetString());
         Assert.NotEqual(Guid.Empty, citations[0].GetProperty("chunkId").GetGuid());
