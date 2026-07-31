@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using MedicalAssistance.Ingestion.Api.Chat;
 using MedicalAssistance.Ingestion.Api.Ingestions;
 using MedicalAssistance.Ingestion.Api.Realtime;
 using MedicalAssistance.Ingestion.Api.Retrieval;
@@ -216,6 +217,13 @@ builder.Services.AddScoped<IRetrievalStep, ScopeRetrievalStep>();
 builder.Services.AddScoped<IRetrievalStep, EmbedRetrievalStep>();
 builder.Services.AddScoped<IRetrievalStep, SearchRetrievalStep>();
 builder.Services.AddScoped<IRetrievalService, RetrievalService>();
+
+// The grounded-chat answer path (ADR-0010/0012): the stateless orchestration behind
+// POST /patients/{id}/chat/answer — retrieve, generate over the evidence, package
+// citations. Generation is a seam so the DB-seeded agent (T43) and the safety net
+// (refusal T45, verification T46) can land without reshaping the endpoint.
+builder.Services.AddScoped<IGroundedAnswerGenerator, GroundedAnswerGenerator>();
+builder.Services.AddScoped<IGroundedAnswerService, GroundedAnswerService>();
 
 // The extraction seam (ADR-0005): one provider-neutral interface for turning a
 // PDF into text + table cell grids. Unconfigured by default so the app boots with

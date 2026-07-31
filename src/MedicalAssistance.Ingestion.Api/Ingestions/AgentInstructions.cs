@@ -44,6 +44,9 @@ public static class AgentNames
 
     /// <summary>The lab-report summarizer: writes the per-document summary a LabReport has no chunking agent to produce.</summary>
     public const string LabReportSummarizer = "LabReportSummarizer";
+
+    /// <summary>The grounded-chat answering agent: answers a question only from the retrieved [E#] evidence, in the question's language.</summary>
+    public const string GroundedChat = "GroundedChat";
 }
 
 /// <summary>
