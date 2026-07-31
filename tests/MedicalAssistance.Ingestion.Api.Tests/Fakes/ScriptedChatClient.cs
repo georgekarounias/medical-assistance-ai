@@ -38,7 +38,18 @@ public sealed class ScriptedChatClient : IChatClient
         }
     }
 
+    // A sentinel enqueued by EnqueueFault: when dequeued, the client throws instead
+    // of replying, so a test can drive a provider failure (e.g. the fail-open query
+    // refinement path). Unlikely to collide with any real scripted response.
+    private const string FaultMarker = "__SCRIPTED_CHAT_FAULT__";
+
     public void EnqueueResponse(string response) => _responses.Enqueue((response, null));
+
+    /// <summary>
+    /// Scripts the next non-summariser call to throw instead of replying — how a test
+    /// exercises a generation/refinement failure without a real, flaky provider.
+    /// </summary>
+    public void EnqueueFault() => _responses.Enqueue((FaultMarker, null));
 
     /// <summary>
     /// Scripts the next patient-summariser response. Optional: an unscripted
@@ -102,6 +113,9 @@ public sealed class ScriptedChatClient : IChatClient
 
         if (!_responses.TryDequeue(out var next))
             throw new InvalidOperationException("ScriptedChatClient has no scripted response left to return.");
+
+        if (next.Response == FaultMarker)
+            throw new InvalidOperationException("ScriptedChatClient scripted fault.");
 
         if (next.Gate is not null)
             await next.Gate.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);

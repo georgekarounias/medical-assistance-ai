@@ -214,6 +214,7 @@ builder.Services.AddScoped<IngestionStrategyRegistry>();
 // The Scope step (Order 10) sets the mandatory patient_id boundary first; embed and
 // search steps join in T41.
 builder.Services.AddScoped<IRetrievalStep, ScopeRetrievalStep>();
+builder.Services.AddScoped<IRetrievalStep, RefineRetrievalStep>();
 builder.Services.AddScoped<IRetrievalStep, EmbedRetrievalStep>();
 builder.Services.AddScoped<IRetrievalStep, SearchRetrievalStep>();
 builder.Services.AddScoped<IRetrievalService, RetrievalService>();

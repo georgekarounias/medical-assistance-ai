@@ -46,6 +46,10 @@ public sealed class GroundedAnswerService(
                 SessionId = request.Filters?.SessionId,
                 Language = request.Filters?.Language,
             },
+            // Conversation context flows into retrieval for query refinement only (T44);
+            // it never becomes evidence and is never stored (ADR-0010).
+            RecentTurns = request.RecentTurns?.Select(t => new ConversationTurn(t.Role, t.Text)).ToList(),
+            PriorSummary = request.PriorSummary,
         };
 
         var result = await retrieval.SearchAsync(retrievalRequest, cancellationToken);

@@ -27,7 +27,20 @@ public sealed record RetrievalRequest
 
     /// <summary>Optional narrowing within the patient's record — every field applied in the same WHERE.</summary>
     public RetrievalFilters Filters { get; init; } = new();
+
+    /// <summary>
+    /// Optional recent conversation turns, most recent last — input only, used by the
+    /// Refine step (T44) to resolve pronouns into a cleaner query. Never an evidence
+    /// source and never stored (ADR-0010).
+    /// </summary>
+    public IReadOnlyList<ConversationTurn>? RecentTurns { get; init; }
+
+    /// <summary>Optional rolling conversation summary from the backend — input only, same use and limits as <see cref="RecentTurns"/>.</summary>
+    public string? PriorSummary { get; init; }
 }
+
+/// <summary>One turn of prior conversation, supplied for query refinement — retrieval's own view, independent of the chat DTOs.</summary>
+public sealed record ConversationTurn(string? Role, string? Text);
 
 /// <summary>
 /// Optional narrowing within a patient's record. Each field, when set, becomes a

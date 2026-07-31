@@ -47,6 +47,9 @@ public static class AgentNames
 
     /// <summary>The grounded-chat answering agent: answers a question only from the retrieved [E#] evidence, in the question's language.</summary>
     public const string GroundedChat = "GroundedChat";
+
+    /// <summary>The query-refinement agent: rewrites a question into a cleaner search query using conversation context (T44).</summary>
+    public const string QueryRefinement = "QueryRefinement";
 }
 
 /// <summary>
