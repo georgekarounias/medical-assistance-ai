@@ -39,7 +39,11 @@ public sealed record EvidenceItem
     /// <summary>The chunk text, verbatim from the source (or labeled AI text for summary chunks).</summary>
     public required string VerbatimText { get; init; }
 
-    /// <summary>Similarity score in 0..1 (1 = closest), derived from the cosine distance the search ranked by.</summary>
+    /// <summary>
+    /// Cosine similarity to the query — 1 minus the cosine distance the search
+    /// ranked by, so higher is closer (1 = identical direction). The Package step's
+    /// confidence threshold (T45) compares against this.
+    /// </summary>
     public required double Score { get; init; }
 }
 

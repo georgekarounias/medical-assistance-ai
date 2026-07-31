@@ -213,6 +213,8 @@ builder.Services.AddScoped<IngestionStrategyRegistry>();
 // The Scope step (Order 10) sets the mandatory patient_id boundary first; embed and
 // search steps join in T41.
 builder.Services.AddScoped<IRetrievalStep, ScopeRetrievalStep>();
+builder.Services.AddScoped<IRetrievalStep, EmbedRetrievalStep>();
+builder.Services.AddScoped<IRetrievalStep, SearchRetrievalStep>();
 builder.Services.AddScoped<IRetrievalService, RetrievalService>();
 
 // The extraction seam (ADR-0005): one provider-neutral interface for turning a

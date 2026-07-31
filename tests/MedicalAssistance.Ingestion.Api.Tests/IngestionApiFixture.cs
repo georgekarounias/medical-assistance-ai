@@ -73,8 +73,18 @@ public sealed class IngestionApiFixture : IAsyncLifetime
     /// instance a test is using for something else never sweeps up work another
     /// test parked. A test about recovery sets its own.
     /// </param>
+    /// <param name="embeddingGenerator">
+    /// The embedding seam for this instance. Left null, the hash-based
+    /// <see cref="DeterministicEmbeddingGenerator"/> is used — right for the many
+    /// tests that never assert on similarity. A retrieval test supplies a
+    /// <see cref="ControllableEmbeddingGenerator"/> with its vectors pinned, so
+    /// ranking order and the confidence cutoff are what the test dictates (T39).
+    /// The same instance embeds ingested chunks and later query vectors, so their
+    /// model and dimensions match by construction.
+    /// </param>
     public WebApplicationFactory<Program> CreateFactory(
-        ScriptedChatClient chatClient, int workerCount = 4, TimeSpan? sweepInterval = null) =>
+        ScriptedChatClient chatClient, int workerCount = 4, TimeSpan? sweepInterval = null,
+        IEmbeddingGenerator<string, Embedding<float>>? embeddingGenerator = null) =>
         new AuthenticatedFactory().WithWebHostBuilder(builder =>
         {
             builder.UseSetting("ConnectionStrings:Postgres", ConnectionString);
@@ -90,7 +100,7 @@ public sealed class IngestionApiFixture : IAsyncLifetime
             {
                 services.AddSingleton<IChatClient>(chatClient);
                 services.AddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(
-                    new DeterministicEmbeddingGenerator(EmbeddingDimensions));
+                    embeddingGenerator ?? new DeterministicEmbeddingGenerator(EmbeddingDimensions));
             });
         });
 

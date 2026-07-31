@@ -26,6 +26,13 @@ public sealed class RetrievalContext(RetrievalRequest request)
     public string EffectiveQuery { get; set; } = request.Question;
 
     /// <summary>
+    /// The embedded <see cref="EffectiveQuery"/>, produced by the Embed step
+    /// (Order 30) with the same model and dimensions ingestion used, and consumed
+    /// by the Search step (Order 40) as the ANN probe. Null until Embed runs.
+    /// </summary>
+    public float[]? QueryEmbedding { get; set; }
+
+    /// <summary>
     /// The retrieved evidence, filled by the Search/Package steps (T41). Empty
     /// until then — and an empty set is a valid outcome the answer path turns into
     /// an insufficient-evidence refusal.

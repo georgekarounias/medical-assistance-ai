@@ -1,4 +1,5 @@
 using MedicalAssistance.Ingestion.Api.Retrieval;
+using MedicalAssistance.Ingestion.Api.Tests.Fakes;
 
 namespace MedicalAssistance.Ingestion.Api.Tests;
 
@@ -109,6 +110,25 @@ public class RetrievalPipelineTests
         var result = await service.SearchAsync(AnyRequest());
 
         Assert.Empty(result.Evidence);
+    }
+
+    [Fact]
+    public async Task The_embed_step_probes_with_the_same_generator_ingestion_used()
+    {
+        // The Embed step must produce the query vector from the same seam that embedded
+        // the chunks — that shared instance is the "same model/dimensions" guarantee.
+        // Here the generator has the question pinned, so the probe is exactly that vector.
+        var embeddings = new ControllableEmbeddingGenerator(IngestionApiFixture.EmbeddingDimensions)
+            .Pin("Is the patient diabetic?", 0.7f, 0.3f, 0.1f);
+        var context = new RetrievalContext(AnyRequest());
+
+        await new EmbedRetrievalStep(embeddings).ExecuteAsync(context, CancellationToken.None);
+
+        Assert.NotNull(context.QueryEmbedding);
+        Assert.Equal(IngestionApiFixture.EmbeddingDimensions, context.QueryEmbedding!.Length);
+        Assert.Equal(0.7f, context.QueryEmbedding[0]);
+        Assert.Equal(0.3f, context.QueryEmbedding[1]);
+        Assert.Equal(0.1f, context.QueryEmbedding[2]);
     }
 
     // Records the order it ran at, and optionally inspects the shared context — the
